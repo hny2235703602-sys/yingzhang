@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>映章 · 小说动漫工作台</title>
+<style>
+:root {
+  --green: #406b52;
+  --ink: #25342e;
+  --muted: #78847b;
+  --line: #e5e9e2;
+  --bg: #f5f6f2;
+  --side: #fafbf8;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.app { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+.sidebar {
+  background: var(--side);
+  border-right: 1px solid var(--line);
+  padding: 14px 16px 24px;
+  min-height: 100vh;
+}
+.brand { display: flex; gap: 10px; align-items: center; }
+.brand .mark {
+  width: 32px; height: 32px; border-radius: 8px; background: var(--green); color: #fff;
+  display: grid; place-items: center; font-size: 16px; flex: none;
+}
+.brand b { display: block; font-size: 16px; font-weight: 650; line-height: 1.2; }
+.brand small { display: block; color: #8b938c; font-size: 11px; margin-top: 1px; }
+.sidebar-body { margin-top: 22px; }
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav button {
+  position: relative;
+  width: calc(100% + 32px);
+  margin-left: -16px;
+  border: 0;
+  background: transparent;
+  color: #3d4a44;
+  text-align: left;
+  padding: 10px 16px 10px 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.nav button svg { width: 18px; height: 18px; flex: none; color: #7d8a82; }
+.nav button.active {
+  background: #e7f0ea;
+  color: var(--green);
+  font-weight: 600;
+}
+.nav button.active svg { color: var(--green); }
+.nav button.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--green);
+}
+.nav-label {
+  margin: 0 0 8px;
+  color: #9aa197;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.2;
+}
+.nav-split { height: 1px; background: var(--line); margin: 14px 0 12px; }
+.main { min-width: 0; min-height: 100vh; }
+.topbar {
+  height: 56px;
+  padding: 0 28px;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #cfd6cc;
+  background: var(--bg);
+}
+.main.has-tabs .topbar { border-bottom: 0; }
+.subnav {
+  display: flex;
+  gap: 28px;
+  align-items: flex-end;
+  padding: 0 28px;
+  border-bottom: 1px solid #cfd6cc;
+  background: var(--bg);
+}
+.subnav.hidden { display: none; }
+.subnav button {
+  position: relative;
+  border: 0;
+  background: none;
+  padding: 8px 0 14px;
+  color: #5d6a63;
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.subnav button::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  transform: translateX(-50%);
+  background: var(--bg);
+  border: 1.5px solid #c5cdc6;
+  z-index: 1;
+}
+.subnav button.active {
+  color: var(--green);
+  font-weight: 600;
+}
+.subnav button.active::after {
+  background: var(--green);
+  border-color: var(--green);
+}
+.topbar h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.page-note {
+  margin: 28px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.page-note.hidden { display: none; }
+.back {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  padding: 0 10px 0 0;
+  font-size: 16px;
+  cursor: pointer;
+}
+.back.hidden { display: none; }
+.covers {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 180px));
+  gap: 28px 24px;
+  padding: 32px;
+}
+.cover-card { position: relative; }
+.cover, .cover-add {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  border: 1px solid #d5ddd4;
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 14px;
+  display: flex;
+  align-items: flex-end;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+  box-shadow: 0 8px 24px #273d2b0a;
+  position: relative;
+  overflow: hidden;
+}
+.cover-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.cover span { position: relative; z-index: 1; }
+.cover-chip {
+  position: absolute;
+  top: 10px;
+  z-index: 2;
+  border: 1px solid #d5ddd4;
+  background: #fff;
+  border-radius: 7px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cover-edit { right: 10px; color: var(--green); border-color: #c5d7cb; }
+.cover-delete { left: 10px; color: #9a5348; border-color: #ead8d4; }
+.drawer {
+  display: grid;
+  grid-template-rows: 0fr;
+  width: 100%;
+  margin: 0;
+  background: #fff;
+  transition: grid-template-rows .38s ease;
+}
+.drawer.open { grid-template-rows: 1fr; }
+.drawer-panel {
+  overflow: hidden;
+  min-height: 0;
+}
+.drawer-panel-inner {
+  padding: 22px 32px 28px;
+  transform: translateY(100%);
+  transition: transform .4s ease;
+}
+.drawer.open .drawer-panel-inner {
+  transform: translateY(0);
+}
+@media (prefers-reduced-motion: reduce) {
+  .drawer, .drawer-panel-inner { transition: none; }
+}
+.drawer-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.drawer-head h2 { margin: 0; font-size: 16px; }
+.drawer-label { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+.drawer-close { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 13px; }
+.drawer-body { display: grid; grid-template-columns: 150px 1fr; gap: 28px; align-items: start; }
+.meta-rows { display: flex; flex-direction: column; gap: 14px; }
+.meta-row { display: grid; grid-template-columns: 84px 1fr; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+.meta-row input, .meta-row select {
+  width: 100%;
+  border: 1px solid #e1e7dc;
+  border-radius: 7px;
+  background: #fcfdfb;
+  padding: 8px 10px;
+  font: inherit;
+  font-weight: 400;
+}
+.cover-preview {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  height: auto;
+  border: 1px dashed #c5d7cb;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+  overflow: hidden;
+  background: #f7f8f4;
+  cursor: pointer;
+  position: relative;
+  padding: 0;
+}
+.cover-preview img { width: 100%; height: 100%; object-fit: cover; }
+.cover-preview span {
+  position: absolute;
+  inset: auto 0 0;
+  background: #1e2e2888;
+  color: #fff;
+  font-size: 12px;
+  padding: 4px 0;
+}
+.cast { margin-top: 22px; }
+.cast h3 { margin: 0 0 6px; font-size: 14px; }
+.cast p { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+.cast table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cast th, .cast td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.cast th { color: var(--green); font-weight: 600; background: #f4f7f2; }
+.cast td.empty { color: var(--muted); text-align: center; }
+.create-hint { margin: 14px 0 0; color: #9a5348; font-size: 12px; }
+.create-hint.hidden { display: none; }
+.drawer-actions { margin-top: 18px; display: flex; justify-content: space-between; align-items: center; }
+.drawer-save, .drawer-delete {
+  border-radius: 7px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+.drawer-save { border: 0; background: var(--green); color: #fff; }
+.drawer-delete { border: 1px solid #ead8d4; background: #fff; color: #9a5348; }
+.drawer-delete.hidden { display: none; }
+.cover-add {
+  align-items: center;
+  justify-content: center;
+  color: var(--green);
+  font-size: 42px;
+  font-weight: 400;
+  line-height: 1;
+}
+.shelf.hidden, #text-pages.hidden, .subnav.hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><div class="mark">映</div><div><b>映章</b><small>STORY TO FRAME</small></div></div>
+    <div class="sidebar-body">
+      <div class="nav-label">创客空间</div>
+      <nav class="nav" aria-label="创客空间">
+        <button type="button" class="active" data-nav="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l2.5 2"/></svg>首页</button>
+        <button type="button" data-nav="image"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.4" fill="currentColor" stroke="none"/><path d="M7 16l3.2-3.2 2.2 2.2L16 11l3 3.5"/></svg>文生图</button>
+        <button type="button" data-nav="text"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6h12M6 12h12M6 18h8"/></svg>文生文</button>
+        <button type="button" data-nav="video"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="6" width="12" height="12" rx="2"/><path d="M15.5 10.5 20 8v8l-4.5-2.5z"/></svg>文生视频</button>
+      </nav>
+      <div class="nav-split"></div>
+      <div class="nav-label">设置</div>
+      <nav class="nav" aria-label="设置">
+        <button type="button" data-nav="models"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>模型配置</button>
+        <button type="button" data-nav="prompts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 5h8l4 4v10a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M15 5v4h4M8 13h8M8 17h5"/></svg>提示词配置</button>
+      </nav>
+    </div>
+  </aside>
+  <main class="main">
+    <header class="topbar"><button type="button" class="back hidden" id="back-novels" aria-label="返回小说封面">←</button><h1 id="page-title">首页</h1></header>
+    <nav class="subnav hidden" id="text-tabs" aria-label="文生文页面">
+      <button type="button" class="active" data-text="source">章节原文</button>
+      <button type="button" data-text="outline">改编大纲</button>
+      <button type="button" data-text="shots">分镜工作台</button>
+      <button type="button" data-text="analysis">本章分析与角色资料</button>
+      <button type="button" data-text="tasks">文本任务</button>
+    </nav>
+    <p class="page-note hidden" id="page-note">服务代开发，暂不可用</p>
+    <div class="shelf hidden" id="novel-shelf">
+      <div class="covers" id="covers"></div>
+      <section class="drawer" id="novel-drawer" aria-label="编辑小说" hidden>
+        <div class="drawer-panel"><div class="drawer-panel-inner">
+        <div class="drawer-head"><h2 id="drawer-title">编辑小说</h2><button type="button" class="drawer-close" id="close-drawer">收起</button></div>
+        <div class="drawer-body">
+          <div>
+            <div class="drawer-label">封面</div>
+            <button type="button" class="cover-preview" id="cover-preview">上传封面</button>
+            <input id="edit-cover" type="file" accept="image/*" hidden>
+          </div>
+          <div class="meta-rows">
+            <label class="meta-row">小说名称<input id="edit-title" type="text"></label>
+            <label class="meta-row">风格
+              <select id="edit-style">
+                <option>国风动画</option>
+                <option>二维动画</option>
+                <option>日系动画</option>
+                <option>写实动画</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="cast">
+          <h3>人物形象</h3>
+          <p>不在这里手写。分析章节后，由 AI 按章节逐步填写。</p>
+          <table>
+            <thead><tr><th>角色</th><th>外貌</th><th>服装</th><th>来源章节</th></tr></thead>
+            <tbody id="cast-body"></tbody>
+          </table>
+        </div>
+        <p class="create-hint hidden" id="create-hint">上传封面并填写小说名称后，点击保存才会新建。</p>
+        <div class="drawer-actions"><button type="button" class="drawer-delete" id="delete-novel">删除这本小说</button><button type="button" class="drawer-save" id="save-novel">保存</button></div>
+        </div></div>
+      </section>
+    </div>
+    <div id="text-pages" class="hidden">
+      <section data-text-page="source"></section>
+      <section data-text-page="outline" class="hidden"></section>
+      <section data-text-page="shots" class="hidden"></section>
+      <section data-text-page="analysis" class="hidden"></section>
+      <section data-text-page="tasks" class="hidden"></section>
+    </div>
+  </main>
+</div>
+<script>
+const novels = [{ title: "成仙", characters: [], style: "国风动画", cover: "" }];
+let editing = -1;
+let draft = null;
+const shelf = document.getElementById("novel-shelf");
+const covers = document.getElementById("covers");
+const drawer = document.getElementById("novel-drawer");
+function escapeHTML(value) {
+  return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+}
+function renderCovers() {
+  covers.innerHTML = novels.map((novel, index) => `<div class="cover-card"><button type="button" class="cover-chip cover-delete" data-delete="${index}">删除</button><button type="button" class="cover-chip cover-edit" data-edit="${index}">编辑</button><button type="button" class="cover" data-index="${index}">${novel.cover ? `<img class="cover-img" alt="" src="${novel.cover}">` : ""}<span>${escapeHTML(novel.title)}</span></button></div>`).join("")
+    + `<button type="button" class="cover-add" id="add-novel" aria-label="新建小说">+</button>`;
+  covers.querySelectorAll(".cover").forEach(card => card.addEventListener("click", () => openNovel(novels[Number(card.dataset.index)].title)));
+  covers.querySelectorAll(".cover-edit").forEach(button => button.addEventListener("click", () => openDrawer(Number(button.dataset.edit))));
+  covers.querySelectorAll(".cover-delete").forEach(button => button.addEventListener("click", () => deleteNovel(Number(button.dataset.delete))));
+  document.getElementById("add-novel").addEventListener("click", openCreate);
+}
+function fillDrawer(novel, creating) {
+  document.getElementById("drawer-title").textContent = creating ? "新建小说" : "编辑小说";
+  document.getElementById("delete-novel").classList.toggle("hidden", creating);
+  document.getElementById("create-hint").classList.add("hidden");
+  document.getElementById("edit-title").value = novel.title;
+  document.getElementById("edit-style").value = novel.style;
+  showCover(novel.cover);
+  renderCast(novel.characters);
+  document.getElementById("edit-cover").value = "";
+}
+function revealDrawer() {
+  drawer.hidden = false;
+  requestAnimationFrame(() => {
+    drawer.classList.add("open");
+    drawer.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+}
+function openCreate() {
+  draft = { title: "", characters: [], style: "国风动画", cover: "" };
+  editing = -1;
+  fillDrawer(draft, true);
+  revealDrawer();
+}
+function openDrawer(index) {
+  draft = null;
+  editing = index;
+  fillDrawer(novels[index], false);
+  revealDrawer();
+}
+function showCover(src) {
+  document.getElementById("cover-preview").innerHTML = src
+    ? `<img alt="" src="${src}"><span>更换封面</span>`
+    : "上传封面";
+}
+function renderCast(rows) {
+  const body = document.getElementById("cast-body");
+  body.innerHTML = rows.length
+    ? rows.map(row => `<tr><td>${escapeHTML(row.name)}</td><td>${escapeHTML(row.appearance)}</td><td>${escapeHTML(row.costume)}</td><td>${escapeHTML(row.source)}</td></tr>`).join("")
+    : `<tr><td class="empty" colspan="4">尚无人物形象</td></tr>`;
+}
+function deleteNovel(index) {
+  const novel = novels[index];
+  if (!novel || !confirm(`删除《${novel.title}》？`)) return;
+  novels.splice(index, 1);
+  editing = -1;
+  drawer.classList.remove("open");
+  drawer.hidden = true;
+  renderCovers();
+}
+function closeDrawer() {
+  draft = null;
+  editing = -1;
+  drawer.classList.remove("open");
+  const hide = () => { if (!drawer.classList.contains("open")) drawer.hidden = true; };
+  drawer.addEventListener("transitionend", hide, { once: true });
+  setTimeout(hide, 420);
+}
+function showShelf() {
+  shelf.classList.remove("hidden");
+  document.getElementById("text-tabs").classList.add("hidden");
+  document.getElementById("text-pages").classList.add("hidden");
+  document.getElementById("back-novels").classList.add("hidden");
+  document.querySelector(".main").classList.remove("has-tabs");
+  document.getElementById("page-title").textContent = "文生文";
+}
+function openNovel(title) {
+  draft = null;
+  editing = -1;
+  drawer.classList.remove("open");
+  drawer.hidden = true;
+  shelf.classList.add("hidden");
+  document.getElementById("text-tabs").classList.remove("hidden");
+  document.getElementById("text-pages").classList.remove("hidden");
+  document.getElementById("back-novels").classList.remove("hidden");
+  document.querySelector(".main").classList.add("has-tabs");
+  document.getElementById("page-title").textContent = title;
+}
+document.getElementById("back-novels").addEventListener("click", showShelf);
+shelf.addEventListener("click", event => {
+  if (event.target.closest(".cover, .cover-chip, .cover-add, .drawer")) return;
+  if (drawer.classList.contains("open")) closeDrawer();
+});
+document.querySelector(".topbar").addEventListener("click", () => {
+  if (!shelf.classList.contains("hidden") && drawer.classList.contains("open")) closeDrawer();
+});
+document.getElementById("close-drawer").addEventListener("click", closeDrawer);
+document.getElementById("delete-novel").addEventListener("click", () => { if (editing >= 0) deleteNovel(editing); });
+document.getElementById("cover-preview").addEventListener("click", () => document.getElementById("edit-cover").click());
+document.getElementById("edit-cover").addEventListener("change", event => {
+  const file = event.target.files && event.target.files[0];
+  const target = draft || (editing >= 0 ? novels[editing] : null);
+  if (!file || !target) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    target.cover = String(reader.result);
+    showCover(target.cover);
+  };
+  reader.readAsDataURL(file);
+});
+document.getElementById("save-novel").addEventListener("click", () => {
+  const title = document.getElementById("edit-title").value.trim();
+  const style = document.getElementById("edit-style").value;
+  if (draft) {
+    if (!title || !draft.cover) {
+      document.getElementById("create-hint").classList.remove("hidden");
+      return;
+    }
+    novels.push({ title, characters: [], style, cover: draft.cover });
+    draft = null;
+    renderCovers();
+    closeDrawer();
+    return;
+  }
+  if (editing < 0) return;
+  if (!title) return;
+  novels[editing].title = title;
+  novels[editing].style = style;
+  renderCovers();
+  closeDrawer();
+});
+renderCovers();
+document.querySelectorAll(".nav button").forEach(button => {
+  button.addEventListener("click", () => {
+    document.querySelectorAll(".nav button").forEach(item => item.classList.remove("active"));
+    button.classList.add("active");
+    document.getElementById("page-title").textContent = button.textContent.trim();
+    const unavailable = button.dataset.nav === "image" || button.dataset.nav === "video";
+    const textPage = button.dataset.nav === "text";
+    document.getElementById("page-note").classList.toggle("hidden", !unavailable);
+    document.getElementById("back-novels").classList.add("hidden");
+    shelf.classList.toggle("hidden", !textPage);
+    if (!textPage) {
+      draft = null;
+      editing = -1;
+      drawer.classList.remove("open");
+      drawer.hidden = true;
+    }
+    document.getElementById("text-tabs").classList.add("hidden");
+    document.getElementById("text-pages").classList.add("hidden");
+    document.querySelector(".main").classList.remove("has-tabs");
+  });
+});
+document.querySelectorAll("#text-tabs button").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll("#text-tabs button").forEach(item => item.classList.toggle("active", item === tab));
+    document.querySelectorAll("[data-text-page]").forEach(page => {
+      page.classList.toggle("hidden", page.dataset.textPage !== tab.dataset.text);
+    });
+  });
+});
+</script>
+</body>
+</html>
