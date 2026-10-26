@@ -1,0 +1,24 @@
+[Unit]
+Description=Yingzhang Studio text worker
+After=network-online.target yingzhang-web.service
+Requires=yingzhang-web.service
+
+[Service]
+Type=simple
+User=yingzhang
+Group=yingzhang
+WorkingDirectory=/opt/yingzhang
+EnvironmentFile=/etc/yingzhang/runtime.env
+Environment=PYTHONPATH=/opt/yingzhang/src
+ExecStart=/opt/yingzhang/.venv/bin/python -m novel_anime.workers.main
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/yingzhang
+
+[Install]
+WantedBy=multi-user.target
