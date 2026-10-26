@@ -1,0 +1,23 @@
+[Unit]
+Description=Yingzhang designed interface text worker
+After=network.target yingzhang-design.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/Yingzhang
+EnvironmentFile=/etc/yingzhang/runtime.env
+Environment=PYTHONPATH=/home/ubuntu/Yingzhang/src
+ExecStart=/home/ubuntu/Yingzhang/.venv/bin/python -m novel_anime.workers.main
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/Yingzhang/data
+
+[Install]
+WantedBy=multi-user.target

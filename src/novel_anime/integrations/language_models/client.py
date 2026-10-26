@@ -2,7 +2,6 @@
 
 import json
 import logging
-import os
 import random
 import re
 import time
@@ -13,6 +12,7 @@ from typing import Any
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from pydantic import BaseModel, ValidationError
 
+from novel_anime.core.credentials import resolve_key
 from novel_anime.core.errors import AppError
 from novel_anime.domain.models import ModelProfile, Review
 
@@ -22,8 +22,9 @@ logger = logging.getLogger(__name__)
 class LLMClient:
     """Read credentials at execution time; never put secrets in model profiles."""
 
-    def __init__(self, profile: ModelProfile) -> None:
+    def __init__(self, profile: ModelProfile, api_key: str | None = None) -> None:
         self.profile = profile.model_copy(deep=True)
+        self._api_key = api_key
 
     def generate(
         self, schema: type[BaseModel], system: str, payload: dict[str, Any], stage: str
@@ -34,7 +35,7 @@ class LLMClient:
         automatically resent because the provider may already have billed the request.
         """
         key = (
-            os.environ.get(self.profile.api_key_env, "").strip()
+            (self._api_key if self._api_key is not None else resolve_key(self.profile.api_key_env))
             if self.profile.api_key_env
             else "lm-studio"
         )
@@ -120,7 +121,7 @@ class LLMClient:
     def list_models(self) -> list[str]:
         """Fetch the provider catalog without making a generation request."""
         key = (
-            os.environ.get(self.profile.api_key_env, "").strip()
+            (self._api_key if self._api_key is not None else resolve_key(self.profile.api_key_env))
             if self.profile.api_key_env
             else "lm-studio"
         )
@@ -201,6 +202,8 @@ class LLMClient:
                                 "schema": schema.model_json_schema(),
                             }
                         }
+                if self.profile.temperature is not None:
+                    kwargs["temperature"] = self.profile.temperature
                 return endpoint(**kwargs)
             except APITimeoutError:
                 raise AppError(

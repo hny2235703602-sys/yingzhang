@@ -244,7 +244,9 @@ def test_local_profile_uses_placeholder_without_mutating_environment(
     monkeypatch.delenv("NOVEL_LLM_API_KEY", raising=False)
     assert LLMClient(profile(api_key_env="")).probe()["ok"]
     assert calls[0]["api_key"] == "lm-studio"
-    assert "NOVEL_LLM_API_KEY" not in module.os.environ
+    import os
+
+    assert "NOVEL_LLM_API_KEY" not in os.environ
 
 
 @pytest.mark.parametrize(

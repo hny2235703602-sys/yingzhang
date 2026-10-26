@@ -29,6 +29,8 @@ class ModelProfile(DomainModel):
     timeout: float = Field(default=120, gt=0)
     retries: int = Field(default=2, ge=0, le=5)
     structured_output: bool = False
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    enabled: bool = True
 
     @model_validator(mode="after")
     def validate_budget(self) -> "ModelProfile":

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
 from novel_anime.application.service import StudioService
+from novel_anime.core.credentials import resolve_key, store_key
 from novel_anime.core.errors import AppError
 from novel_anime.domain.models import ModelProfile
 from novel_anime.persistence.database import ConfigRow, WorkRow, now
@@ -45,6 +45,7 @@ def snapshot(service: StudioService) -> dict:
             "url": p["base_url"],
             "env": p["api_key_env"],
             "tokens": p["max_output_tokens"],
+            "key_configured": bool(resolve_key(p["api_key_env"])),
         }
         for key, p in service.load_profiles().items()
     ]
@@ -92,6 +93,51 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
             body.get("revision"),
         )
         return {"id": ident}
+    if action == "simple-profile":
+        from novel_anime.integrations.language_models.client import LLMClient
+
+        ident = body.get("id") or "online"
+        existing = service.load_profiles().get(ident, {})
+        url = urlparse(str(body.get("url", "")))
+        if (
+            url.scheme != "https"
+            or not url.netloc
+            or url.username
+            or url.password
+            or url.query
+            or url.fragment
+        ):
+            raise AppError("invalid_input", "请填写不含账号、查询参数的 HTTPS API 地址。")
+        timeout = float(body.get("timeout", 120))
+        if not 10 <= timeout <= 600:
+            raise AppError("invalid_input", "超时范围为 10 到 600 秒。")
+        profile = ModelProfile(
+            **{
+                **existing,
+                "profile_id": ident,
+                "provider": existing.get("provider", "线上模型"),
+                "protocol": "chat_completions",
+                "base_url": body["url"].rstrip("/"),
+                "model": body.get("model", "catalog"),
+                "timeout": timeout,
+                "temperature": body.get("temperature", 1),
+                "enabled": body.get("enabled", True),
+                "api_key_env": existing.get("api_key_env") or f"YINGZHANG_KEY_{ident}",
+            }
+        )
+        supplied = body.get("key", "")
+        if not isinstance(supplied, str) or len(supplied) > 4096 or "\n" in supplied:
+            raise AppError("invalid_input", "API Key 格式不正确。")
+        if body.get("list_models"):
+            # Transient key used only for this catalog request; never persisted by listing.
+            models = LLMClient(profile, api_key=supplied or None).list_models()
+            return {"models": models}
+        service.save_profile(profile.model_dump())
+        if body.get("clear_key"):
+            store_key(profile.api_key_env, "")
+        elif supplied.strip():
+            store_key(profile.api_key_env, supplied)
+        return {"id": profile.profile_id}
     if action == "profile":
         profile = ModelProfile(**body)
         service.save_profile(profile.model_dump())
@@ -101,7 +147,9 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
         profile = profiles.get(body.get("profile_id"))
         if not profile:
             raise AppError("invalid_input", "请先保存并选择模型配置。")
-        if not profile.get("api_key_env") or not os.environ.get(profile["api_key_env"]):
+        if not profile.get("enabled", True):
+            raise AppError("model_disabled", "模型已关闭，请在设置中启用。")
+        if not profile.get("api_key_env") or not resolve_key(profile["api_key_env"]):
             raise AppError("missing_api_key", "云端尚未设置此配置的 API Key 环境变量。")
         ident = service.create_run(
             body["chapter_id"],
@@ -132,7 +180,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def json(self, status: int, value: dict | list) -> None:
         profiles = StudioService().load_profiles()
-        secrets = tuple(os.environ.get(p.get("api_key_env", ""), "") for p in profiles.values())
+        secrets = tuple(resolve_key(p.get("api_key_env", "")) for p in profiles.values())
         self.send(
             status,
             json.dumps(
