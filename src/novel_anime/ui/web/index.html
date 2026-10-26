@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>映章 · 小说动漫工作台</title>
+<style>
+:root {
+  --green: #406b52;
+  --ink: #25342e;
+  --muted: #78847b;
+  --line: #e5e9e2;
+  --bg: #f5f6f2;
+  --side: #fafbf8;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.app { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+.sidebar {
+  background: var(--side);
+  border-right: 1px solid var(--line);
+  padding: 14px 16px 24px;
+  min-height: 100vh;
+}
+.brand { display: flex; gap: 10px; align-items: center; }
+.brand .mark {
+  width: 32px; height: 32px; border-radius: 8px; background: var(--green); color: #fff;
+  display: grid; place-items: center; font-size: 16px; flex: none;
+}
+.brand b { display: block; font-size: 16px; font-weight: 650; line-height: 1.2; }
+.brand small { display: block; color: #8b938c; font-size: 11px; margin-top: 1px; }
+.sidebar-body { margin-top: 22px; }
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav button {
+  position: relative;
+  width: calc(100% + 32px);
+  margin-left: -16px;
+  border: 0;
+  background: transparent;
+  color: #3d4a44;
+  text-align: left;
+  padding: 10px 16px 10px 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.nav button svg { width: 18px; height: 18px; flex: none; color: #7d8a82; }
+.nav button.active {
+  background: #e7f0ea;
+  color: var(--green);
+  font-weight: 600;
+}
+.nav button.active svg { color: var(--green); }
+.nav button.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--green);
+}
+.nav-label {
+  margin: 0 0 8px;
+  color: #9aa197;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.2;
+}
+.nav-split { height: 1px; background: var(--line); margin: 14px 0 12px; }
+.main { min-width: 0; min-height: 100vh; }
+.topbar {
+  height: 56px;
+  padding: 0 28px;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #cfd6cc;
+  background: var(--bg);
+}
+.main.has-tabs .topbar { border-bottom: 0; }
+.subnav {
+  display: flex;
+  gap: 28px;
+  align-items: flex-end;
+  padding: 0 28px;
+  border-bottom: 1px solid #cfd6cc;
+  background: var(--bg);
+}
+.subnav.hidden { display: none; }
+.subnav button {
+  position: relative;
+  border: 0;
+  background: none;
+  padding: 8px 0 14px;
+  color: #5d6a63;
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.subnav button::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  transform: translateX(-50%);
+  background: var(--bg);
+  border: 1.5px solid #c5cdc6;
+  z-index: 1;
+}
+.subnav button.active {
+  color: var(--green);
+  font-weight: 600;
+}
+.subnav button.active::after {
+  background: var(--green);
+  border-color: var(--green);
+}
+.topbar h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.page-note {
+  margin: 28px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.page-note.hidden { display: none; }
+.back {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  padding: 0 10px 0 0;
+  font-size: 16px;
+  cursor: pointer;
+}
+.back.hidden { display: none; }
+.covers {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 180px));
+  gap: 28px 24px;
+  padding: 32px;
+}
+.cover-card { position: relative; }
+.cover, .cover-add {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  border: 1px solid #d5ddd4;
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 14px;
+  display: flex;
+  align-items: flex-end;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+  box-shadow: 0 8px 24px #273d2b0a;
+  position: relative;
+  overflow: hidden;
+}
+.cover-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.cover span { position: relative; z-index: 1; }
+.cover-chip {
+  position: absolute;
+  top: 10px;
+  z-index: 2;
+  border: 1px solid #d5ddd4;
+  background: #fff;
+  border-radius: 7px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cover-edit { right: 10px; color: var(--green); border-color: #c5d7cb; }
+.cover-delete { left: 10px; color: #9a5348; border-color: #ead8d4; }
+.drawer {
+  display: grid;
+  grid-template-rows: 0fr;
+  width: 100%;
+  margin: 0;
+  background: #fff;
+  transition: grid-template-rows .38s ease;
+}
+.drawer.open { grid-template-rows: 1fr; }
+.drawer-panel {
+  overflow: hidden;
+  min-height: 0;
+}
+.drawer-panel-inner {
+  padding: 22px 32px 28px;
+  transform: translateY(100%);
+  transition: transform .4s ease;
+}
+.drawer.open .drawer-panel-inner {
+  transform: translateY(0);
+}
+@media (prefers-reduced-motion: reduce) {
+  .drawer, .drawer-panel-inner { transition: none; }
+}
+.drawer-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.drawer-head h2 { margin: 0; font-size: 16px; }
+.drawer-label { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+.drawer-close { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 13px; }
+.drawer-body { display: grid; grid-template-columns: 150px 1fr; gap: 28px; align-items: start; }
+.meta-rows { display: flex; flex-direction: column; gap: 14px; }
+.meta-row { display: grid; grid-template-columns: 84px 1fr; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+.meta-row input, .meta-row select {
+  width: 100%;
+  border: 1px solid #e1e7dc;
+  border-radius: 7px;
+  background: #fcfdfb;
+  padding: 8px 10px;
+  font: inherit;
+  font-weight: 400;
+}
+.cover-preview {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  height: auto;
+  border: 1px dashed #c5d7cb;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+  overflow: hidden;
+  background: #f7f8f4;
+  cursor: pointer;
+  position: relative;
+  padding: 0;
+}
+.cover-preview img { width: 100%; height: 100%; object-fit: cover; }
+.cover-preview span {
+  position: absolute;
+  inset: auto 0 0;
+  background: #1e2e2888;
+  color: #fff;
+  font-size: 12px;
+  padding: 4px 0;
+}
+.cast { margin-top: 22px; }
+.cast h3 { margin: 0 0 6px; font-size: 14px; }
+.cast p { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+.cast table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cast th, .cast td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.cast th { color: var(--green); font-weight: 600; background: #f4f7f2; }
+.cast td.empty { color: var(--muted); text-align: center; }
+.create-hint { margin: 14px 0 0; color: #9a5348; font-size: 12px; }
+.create-hint.hidden { display: none; }
+.drawer-actions { margin-top: 18px; display: flex; justify-content: space-between; align-items: center; }
+.drawer-save, .drawer-delete {
+  border-radius: 7px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+.drawer-save { border: 0; background: var(--green); color: #fff; }
+.drawer-delete { border: 1px solid #ead8d4; background: #fff; color: #9a5348; }
+.drawer-delete.hidden { display: none; }
+.cover-add {
+  align-items: center;
+  justify-content: center;
+  color: var(--green);
+  font-size: 42px;
+  font-weight: 400;
+  line-height: 1;
+}
+.shelf.hidden, #text-pages.hidden, .subnav.hidden { display: none; }
+/* Preserve the original sage palette and quiet editorial layout. */
+:root{--green-dark:#2d503d;--muted:#6e7c73;--radius:14px;--shadow:0 10px 36px #243f2d06}
+button,input,select,textarea{font:inherit}button{touch-action:manipulation}button:focus-visible,a:focus-visible{outline:3px solid #7aab8b;outline-offset:3px}input:focus,textarea:focus,select:focus{outline:2px solid #96b49d;outline-offset:1px;border-color:#96b49d}button:disabled{opacity:.5;cursor:not-allowed}button{transition:background .16s,box-shadow .16s,transform .16s}button:not(:disabled):active{transform:translateY(1px)}[hidden],.hidden{display:none!important}.sidebar{position:sticky;top:0;height:100dvh;display:flex;flex-direction:column;padding-top:25px}.brand{margin-bottom:8px}.brand .mark{width:38px;height:38px;border-radius:11px;font-family:serif;font-size:21px}.brand b{font-size:18px;letter-spacing:2px}.brand small{font-size:9px;letter-spacing:1.7px;margin-top:5px}.sidebar-body{margin-top:30px}.nav-label{letter-spacing:2px;font-size:10px;font-weight:600;margin-left:5px;margin-bottom:13px;color:#8a968d}.nav button{width:100%;margin:0;border-radius:8px;padding:11px 12px;font-size:13px}.nav button.active::before{display:none}.nav button:hover{background:#edf2eb}.nav button.active{background:#e5eee6}.nav-split{margin:24px 0}.sidebar-footer{margin-top:auto;padding-top:24px}.sidebar-footer .btn{width:100%;font-size:12px}.sidebar-footer p{font-size:11px;color:var(--muted);line-height:1.8}.sidebar-footer .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#acb7a9;margin-right:6px}.topbar{height:84px;justify-content:space-between;border-color:var(--line);padding:0 36px;background:#fafbf8}.topbar-left{display:flex;align-items:center;gap:8px}.topbar h1{font-size:18px;line-height:1.4}.breadcrumb{font-size:10px;color:#8b968d;letter-spacing:1px;margin-bottom:3px}.topbar-right{display:flex;align-items:center;gap:10px}.prototype-tag{border:1px solid #dce5d9;border-radius:5px;color:#6a7c6c;padding:3px 7px;font-size:10px}.avatar{width:30px;height:30px;display:grid;place-items:center;border-radius:50%;background:#e7ece2;font-size:12px;color:#5d765d}.subnav{padding:0 36px;gap:24px;border-color:var(--line);background:#fafbf8;overflow:auto}.subnav button{font-size:12px;padding:12px 0 16px}.subnav button::after{height:2px;width:100%;border:0;border-radius:0;left:0;bottom:0;transform:none;background:transparent}.subnav button.active::after{background:var(--green)}#workspace{padding:32px 36px;max-width:1480px;margin:0 auto}.welcome{background:#eaf0e5;border:1px solid #dee6d8;border-radius:var(--radius);padding:38px 36px;display:flex;align-items:center;justify-content:space-between;gap:28px;position:relative;overflow:hidden}.eyebrow{font-size:10px;letter-spacing:2px;color:#7c8e78;font-weight:600}.welcome h2{font-family:"Songti SC","Noto Serif CJK SC",serif;font-weight:500;font-size:32px;letter-spacing:2px;margin:14px 0 8px}.welcome p{color:#72816e;font-size:13px}.welcome .actions{margin-top:25px}.welcome-art{display:flex;align-items:center;gap:18px;margin-right:25px;color:#a0b49a}.welcome-art div{width:86px;height:118px;border:1px solid #b9c9ae;border-radius:7px;display:grid;place-items:center;font:38px serif;background:#f4f7ecaa;transform:rotate(-8deg);box-shadow:7px 9px 0 #d5dfc9}.welcome-art div:last-child{transform:rotate(8deg);background:#3f624d;color:#e9eee2;box-shadow:7px 9px 0 #cedac2}.actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 15px;border:1px solid #dce3d7;border-radius:7px;color:#50624f;background:#fff;cursor:pointer;font-size:12px;text-decoration:none}.btn:hover:not(:disabled){background:#f0f4eb;border-color:#b8c9af}.btn.primary{background:var(--green);border-color:var(--green);color:#fff}.btn.primary:hover:not(:disabled){background:var(--green-dark)}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);margin:22px 0 32px;overflow:hidden}.stats>div{background:#fdfefa;padding:19px 24px}.stats strong{font-size:25px;font-weight:500;display:block;line-height:1.4}.stats>div:last-child strong{font-size:18px;margin-bottom:9px}.stats span{font-size:11px;color:var(--muted)}.section-head{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:20px}.section-head h2{font-size:17px;font-weight:600;margin:0 0 5px}.section-head p{font-size:12px;color:var(--muted);margin:0}.section-head .eyebrow{margin-bottom:9px}.recent-list{background:#fff;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}.recent-item{width:100%;background:#fff;border:0;border-bottom:1px solid var(--line);padding:15px 21px;display:flex;align-items:center;gap:14px;cursor:pointer;text-align:left;color:var(--ink)}.recent-item:last-child{border:0}.recent-item:hover{background:#fafcf6}.recent-item small{display:block;color:var(--muted);font-size:11px;margin-top:3px}.recent-item b{font-size:13px;font-weight:500}.mini-cover{background:#e9eddf;color:#688161;width:34px;height:45px;display:grid;place-items:center;border-radius:3px;font:18px serif}.recent-time{margin-left:auto;color:#83917e;font-size:11px}.notice{border:1px solid #e0e7d9;background:#f0f4e9;border-radius:9px;padding:14px 17px;font-size:12px;color:#6e7e64;display:flex;gap:12px;line-height:1.8;margin:22px 0}.notice b{flex-shrink:0;font-weight:600}.shelf-toolbar{padding:30px 32px 0;display:flex;align-items:center;justify-content:space-between;gap:18px}.shelf-toolbar h2{margin:0 0 3px;font-size:18px}.shelf-toolbar p{font-size:12px;color:var(--muted);margin:0}.shelf-tools{display:flex;gap:8px;align-items:center}.shelf-tools input,.shelf-tools select{border:1px solid var(--line);background:#fff;padding:8px 10px;border-radius:7px;color:var(--ink);font-size:12px}.shelf-tools input{max-width:170px}.covers{grid-template-columns:repeat(auto-fill,minmax(155px,190px));gap:28px 24px;padding:28px 32px}.cover{padding:0;aspect-ratio:3/4;border-radius:10px}.cover:hover{box-shadow:0 8px 24px #273d2b14;transform:translateY(-3px)}.cover-pattern{width:100%;height:100%;background:linear-gradient(135deg,#e5e9da,#eff1e5 50%,#d5dfca);display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:24px 16px;position:relative;isolation:isolate}.cover-pattern::before{content:"";position:absolute;width:160%;height:90%;border:1px solid #bbc9ac;border-radius:50%;left:-30%;top:40%;z-index:-1;box-shadow:0 10px 0 #d4ddc7,0 20px 0 #b9c8aa33}.cover-pattern strong{font:25px/1.5 "Songti SC",serif;letter-spacing:4px;color:#4b6447;overflow-wrap:anywhere}.cover-pattern small{font-size:9px;letter-spacing:2px;color:#829174}.cover-pattern i{font-style:normal;font-size:8px;letter-spacing:3px;color:#718067}.book-caption{display:flex;align-items:flex-start;justify-content:space-between;margin-top:12px;gap:5px}.book-caption b{font-size:13px;font-weight:600}.book-caption small{display:block;font-size:10px;color:var(--muted);margin-top:4px}.icon-btn{background:transparent;border:0;cursor:pointer;color:#8a9786;letter-spacing:2px;padding:0 3px;min-height:28px}.cover-add{aspect-ratio:3/4;border-style:dashed;background:#f9fbf5;flex-direction:column;gap:12px;border-radius:10px}.cover-add:hover{background:#eff4e9}.cover-add small{font-size:12px;font-weight:400}.drawer{border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.drawer-panel-inner{max-width:1000px}.drawer-body{grid-template-columns:120px 1fr}.drawer-head{margin-bottom:23px}.drawer-head h2{font-size:18px}.upload-placeholder{position:static!important;color:#85947b!important;background:none!important;line-height:2!important;font-size:14px!important}.upload-placeholder small{font-size:9px}.meta-row{grid-template-columns:85px 1fr}.meta-row input,.meta-row select{max-width:550px}.cast p{line-height:1.8}.cast table{border:1px solid var(--line)}#text-pages{padding:24px 36px;max-width:1480px;margin:auto}.chapter-bar{display:flex;align-items:center;gap:12px;margin-bottom:22px;flex-wrap:wrap}.chapter-bar label{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:10px}.chapter-bar select{min-width:180px;max-width:340px;padding:9px 12px;border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--ink);font-size:12px}.chapter-bar>.muted{margin-left:auto;font-size:11px}.editor-grid{display:grid;grid-template-columns:minmax(0,1fr) 240px;gap:22px;align-items:start}.panel{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:25px;box-shadow:var(--shadow)}.panel h3{margin:0 0 18px;font-size:15px;font-weight:600}.field{display:flex;flex-direction:column;gap:8px;font-size:12px;font-weight:500;color:#50604e;margin-bottom:18px;min-width:0}.field input,.field select,.field textarea{width:100%;border:1px solid #e0e6da;background:#fcfdf9;border-radius:7px;padding:10px 12px;color:var(--ink);font-size:13px;min-width:0}.field textarea{resize:vertical;line-height:1.9}.field small{color:var(--muted);font-weight:400;font-size:11px;line-height:1.8}.field-row{display:grid;grid-template-columns:1fr 1fr;gap:16px}.manuscript{min-height:340px;font-family:"Songti SC","Noto Serif CJK SC",serif!important;font-size:15px!important;line-height:2.2!important}.editor-footer{display:flex;justify-content:space-between;font-size:10px;color:#8b9683;margin:-9px 0 23px}.guidance{background:#f4f6ed;padding:23px}.guidance h3{font:20px/1.6 "Songti SC",serif;margin:15px 0}.guidance ol{padding-left:18px;font-size:12px;line-height:2;color:#7a8672}.guidance li{padding:5px 0}.guidance p{font-size:11px;color:var(--muted);line-height:1.9}.guidance hr{border:0;border-top:1px solid var(--line);margin:22px 0}.badge{display:inline-flex;border:1px solid #dce6d4;background:#eff5e9;color:#6f835e;border-radius:5px;padding:3px 8px;font-size:10px;white-space:nowrap}.badge.amber{border-color:#ecdfc5;background:#fbf5e9;color:#a08a55}.muted{color:var(--muted);font-size:12px;line-height:1.9}.empty-state{text-align:center;padding:42px 24px;color:var(--muted)}.empty-symbol{width:48px;height:48px;border-radius:50%;background:#f0f4e9;color:#8a9e7b;display:grid;place-items:center;margin:0 auto 16px;font-size:28px}.empty-state h2{font-size:17px;font-weight:500;color:#687c60;margin:8px 0}.empty-state p{font-size:12px;max-width:440px;margin:10px auto 20px;line-height:1.9}.task-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;padding:15px 0}.task-summary small{display:block;font-size:10px;color:var(--muted);margin-bottom:8px}.task-summary b{font-size:13px;font-weight:500;overflow-wrap:anywhere}.task-empty{margin-top:22px}.settings-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,.65fr);gap:24px;align-items:start}.prompt-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-bottom:22px}.prompt-grid .field{margin-bottom:0}.step-number{font-size:11px;color:#8ba17d;margin-right:10px}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}.toast{position:fixed;bottom:25px;left:calc(50% + 116px);transform:translate(-50%,15px);background:#304d3b;color:#fff;box-shadow:0 7px 30px #253b2b20;padding:12px 20px;border-radius:9px;font-size:12px;max-width:90vw;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:100}.toast.visible{opacity:1;transform:translate(-50%,0)}.prototype-banner{font-size:11px;color:#8d987f;padding-top:15px;line-height:1.8}
+@media(min-width:1600px){.app{grid-template-columns:250px 1fr}.sidebar{padding-left:22px;padding-right:22px}.topbar{padding-left:50px;padding-right:50px}}
+@media(max-width:1100px){.app{grid-template-columns:190px 1fr}.topbar{padding:0 24px}#workspace,#text-pages{padding:24px}.welcome{padding:28px}.welcome-art{margin:0}.welcome-art div{width:58px;height:85px;font-size:30px}.welcome h2{font-size:26px}.editor-grid{grid-template-columns:1fr}.guidance{display:none}.stats>div{padding:17px}.settings-grid{grid-template-columns:1fr}.shelf-toolbar{align-items:flex-start;flex-direction:column}.toast{left:calc(50% + 95px)}}
+@media(max-width:700px){.app{display:block}.sidebar{height:auto;position:relative;min-height:0;padding:16px;border-bottom:1px solid var(--line);border-right:0}.brand{margin-bottom:14px}.sidebar-body{margin:0;display:flex;flex-direction:column;gap:7px}.nav{flex-direction:row;gap:4px;overflow-x:auto}.nav button{width:auto;white-space:nowrap;flex:none;padding:8px 10px;font-size:11px}.nav button svg{width:15px;height:15px}.nav-label,.nav-split,.sidebar-footer{display:none}.topbar{height:70px;padding:0 18px}#workspace,#text-pages{padding:20px 16px}.welcome{padding:25px 22px}.welcome h2{font-size:25px}.welcome-art{display:none}.stats{grid-template-columns:1fr 1fr;margin-bottom:25px}.stats>div{padding:16px 20px}.subnav{padding:0 18px;gap:22px}.shelf-toolbar{padding:22px 18px 0}.shelf-tools{flex-wrap:wrap;width:100%}.shelf-tools input{max-width:none;flex:1;min-width:100px}.covers{padding:22px 18px;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px 18px}.drawer-panel-inner{padding:22px 18px}.drawer-body{grid-template-columns:90px 1fr;gap:16px}.meta-row{display:flex;align-items:stretch;flex-direction:column;font-size:12px;gap:5px}.meta-row input,.meta-row select{font-size:12px}.cast{overflow:auto}.cast table{min-width:400px}.notice{flex-direction:column;gap:3px;font-size:11px}.prompt-grid,.field-row{grid-template-columns:1fr;gap:0}.prompt-grid{gap:18px}.panel{padding:20px}.task-summary{grid-template-columns:1fr;gap:15px}.recent-time{font-size:9px}.chapter-bar>.muted{margin-left:0}.toast{left:50%}.empty-state{padding:35px 12px}.section-head{align-items:flex-start}.topbar-right .prototype-tag{max-width:90px;font-size:9px}.field input,.field select,.field textarea{font-size:16px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;scroll-behavior:auto!important}}
+
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><div class="mark">映</div><div><b>映章</b><small>STORY TO FRAME</small></div></div>
+    <div class="sidebar-body">
+      <div class="nav-label">创作空间</div>
+      <nav class="nav" aria-label="创作空间">
+        <button type="button" class="active" data-nav="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l2.5 2"/></svg>首页</button>
+        <button type="button" data-nav="image"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.4" fill="currentColor" stroke="none"/><path d="M7 16l3.2-3.2 2.2 2.2L16 11l3 3.5"/></svg>文生图</button>
+        <button type="button" data-nav="text"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6h12M6 12h12M6 18h8"/></svg>文生文</button>
+        <button type="button" data-nav="video"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="6" width="12" height="12" rx="2"/><path d="M15.5 10.5 20 8v8l-4.5-2.5z"/></svg>文生视频</button>
+      </nav>
+      <div class="nav-split"></div>
+      <div class="nav-label">设置</div>
+      <nav class="nav" aria-label="设置">
+        <button type="button" data-nav="models"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>模型配置</button>
+        <button type="button" data-nav="prompts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 5h8l4 4v10a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M15 5v4h4M8 13h8M8 17h5"/></svg>提示词配置</button>
+      </nav>
+    </div>
+  <div class="sidebar-footer"><button class="btn" data-action="export">↓ 导出原型数据</button><p><span class="dot"></span>交互原型 · 浏览器存储<br>云端应用与 Windows 算力独立部署</p></div></aside>
+  <main class="main">
+    <header class="topbar"><div class="topbar-left"><button type="button" class="back hidden" id="back-novels" aria-label="返回作品库">←</button><div><div class="breadcrumb" id="breadcrumb">映章 / 创作空间</div><h1 id="page-title">首页</h1></div></div><div class="topbar-right"><span class="prototype-tag">交互原型 · 未连接 API</span><span class="avatar" aria-label="个人工作台">映</span></div></header>
+    <nav class="subnav hidden" id="text-tabs" aria-label="文生文页面">
+      <button type="button" class="active" data-text="source">章节原文</button>
+      <button type="button" data-text="outline">改编大纲</button>
+      <button type="button" data-text="shots">分镜工作台</button>
+      <button type="button" data-text="analysis">本章分析与角色资料</button>
+      <button type="button" data-text="tasks">文本任务</button>
+    </nav>
+    <p class="page-note hidden" id="page-note">服务代开发，暂不可用</p>
+    <div class="shelf hidden" id="novel-shelf">
+      <div class="shelf-toolbar"><div><h2 id="shelf-title">作品库</h2><p>从一部作品开始，让章节逐步成为画面。</p></div><div class="shelf-tools"><input id="book-search" type="search" aria-label="搜索作品" placeholder="搜索作品名称"><select id="book-filter" aria-label="按风格筛选"><option value="all">全部风格</option><option>国风动画</option><option>二维动画</option><option>日系动画</option><option>写实动画</option></select><button class="btn primary" data-action="create">＋ 新建作品</button></div></div><div class="covers" id="covers"></div><p id="no-matches" class="page-note" hidden>没有符合条件的作品，试试其他关键词或风格。</p>
+      <section class="drawer" id="novel-drawer" aria-label="编辑小说" hidden>
+        <div class="drawer-panel"><div class="drawer-panel-inner">
+        <div class="drawer-head"><h2 id="drawer-title">编辑小说</h2><button type="button" class="drawer-close" id="close-drawer">收起</button></div>
+        <div class="drawer-body">
+          <div>
+            <div class="drawer-label">封面</div>
+            <button type="button" class="cover-preview" id="cover-preview">上传封面</button>
+            <input id="edit-cover" type="file" accept="image/*" hidden>
+          </div>
+          <div class="meta-rows">
+            <label class="meta-row">小说名称<input id="edit-title" type="text" maxlength="100" placeholder="为你的故事取个名字"></label>
+            <label class="meta-row">风格
+              <select id="edit-style">
+                <option>国风动画</option>
+                <option>二维动画</option>
+                <option>日系动画</option>
+                <option>写实动画</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="cast">
+          <h3>人物形象</h3>
+          <p>不在这里手写。分析章节后，由 AI 按章节提出建议，确认后采用。</p>
+          <table>
+            <thead><tr><th>角色</th><th>外貌</th><th>服装</th><th>来源章节</th></tr></thead>
+            <tbody id="cast-body"></tbody>
+          </table>
+        </div>
+        <p class="create-hint hidden" id="create-hint">填写作品名称后保存，封面可稍后添加。</p>
+        <div class="drawer-actions"><button type="button" class="drawer-delete" id="delete-novel">删除这本小说</button><button type="button" class="drawer-save" id="save-novel">保存</button></div>
+        </div></div>
+      </section>
+    </div>
+    <div id="workspace"></div>
+    <div id="text-pages" class="hidden">
+      <section data-text-page="source"></section>
+      <section data-text-page="outline" class="hidden"></section>
+      <section data-text-page="shots" class="hidden"></section>
+      <section data-text-page="analysis" class="hidden"></section>
+      <section data-text-page="tasks" class="hidden"></section>
+    </div>
+  </main>
+</div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script>
+// Standalone prototype: all data stays in this browser. No external API requests.
+const $ = id => document.getElementById(id);
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const uid = () => globalThis.crypto?.randomUUID?.() || `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const KEY = 'yingzhang-design-v2';
+const fresh = () => ({novels:[], profiles:[], activeProfile:'', templates:{analysis:'提取本章事件、人物与原文依据，标明存疑项，不补写不存在的事实。',outline:'保持因果、人物动机与关键信息揭示顺序，将本章改编为场景大纲。',shots:'按剧情需要拆镜，描述景别、人物动作、镜头运动及画面连续性。',review:'检查原文引用、人物一致性、因果与观众知情顺序，列出需人工复核的问题。'}});
+let data = fresh();
+let storageWarning = '';
+try { const raw = null; if (raw?.version === 2 && Array.isArray(raw.novels) && Array.isArray(raw.profiles)) data = {...fresh(),...raw}; } catch { storageWarning = '无法读取浏览器存储。本次修改仍可编辑，请导出备份。'; }
+let route='home', currentId=null, tab='source', chapterId=null, search='', filter='all', editingId=null, editDraft=null, dirty=false;
+const labels={home:'首页',text:'文生文',image:'文生图',video:'文生视频',models:'模型配置',prompts:'提示词配置'};
+const current=()=>data.novels.find(n=>n.id===currentId);
+const chapter=()=>current()?.chapters.find(c=>c.id===chapterId);
+const notify=message=>{ $('toast').textContent=message; $('toast').classList.add('visible'); clearTimeout(notify.timer); notify.timer=setTimeout(()=>$('toast').classList.remove('visible'),3500); };
+function persist(){try {localStorage.setItem(KEY,JSON.stringify({...data,version:2}));return true;}catch{notify('浏览器存储空间不足或已禁用。请导出备份，当前数据仅在内存中。');return false;}}
+function leaveDraft(){return !dirty || confirm('有未保存的修改，离开后会丢失。继续离开？');}
+function closeEditor(){ $('novel-drawer').hidden=true; $('novel-drawer').classList.remove('open'); editDraft=null; editingId=null; dirty=false; }
+function go(next){if(!leaveDraft())return;closeEditor();route=next;currentId=null;chapterId=null;tab='source';render();}
+function download(name,value){const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+function exportData(){download('映章-原型备份.json',{...data,version:2,exportedAt:new Date().toISOString()});notify('备份已导出，不包含 API 密钥。');}
+function badge(text,tone=''){return `<span class="badge ${tone}">${esc(text)}</span>`;}
+function empty(title,text,action=''){return `<div class="empty-state"><div class="empty-symbol">✧</div><h2>${esc(title)}</h2><p>${esc(text)}</p>${action}</div>`;}
+function button(text,action,primary=false){return `<button type="button" class="btn ${primary?'primary':''}" data-action="${action}">${text}</button>`;}
+function render(){
+ document.querySelectorAll('[data-nav]').forEach(b=>{b.classList.toggle('active',b.dataset.nav===route);if(b.dataset.nav===route)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
+ const inBook=route==='text'&&current();
+ $('page-title').textContent=inBook?current().title:labels[route];
+ $('breadcrumb').textContent=inBook?'创作空间 / 文生文 / 作品':'映章 / '+(route==='models'||route==='prompts'?'设置':'创作空间');
+ $('back-novels').classList.toggle('hidden',!inBook);
+ $('text-tabs').classList.toggle('hidden',!inBook);
+ document.querySelector('.main').classList.toggle('has-tabs',!!inBook);
+ $('novel-shelf').classList.toggle('hidden',route!=='text'||!!inBook);
+ $('text-pages').classList.toggle('hidden',!inBook);
+ $('page-note').classList.add('hidden');
+ $('workspace').hidden=!!inBook||route==='text';
+ if(inBook)renderBook();else if(route==='text')renderShelf();else if(route==='home')renderHome();else if(route==='models')renderModels();else if(route==='prompts')renderPrompts();else renderUnavailable();
+}
+function renderHome(){
+ const count=data.novels.reduce((a,n)=>a+n.chapters.length,0);
+ $('workspace').innerHTML=`<section class="welcome"><div><div class="eyebrow">YOUR STORY, FRAME BY FRAME</div><h2>让故事，从这一章开始。</h2><p>整理章节、梳理剧情，让每一帧都有来处。</p><div class="actions">${button('进入作品库 →','library',true)}${button('新建作品','create')}</div></div><div class="welcome-art" aria-hidden="true"><div>文</div><span>→</span><div>映</div></div></section><div class="stats"><div><strong>${data.novels.length}</strong><span>部作品</span></div><div><strong>${count}</strong><span>章已保存</span></div><div><strong>${data.profiles.length}</strong><span>个模型配置</span></div><div><strong>未连接</strong><span>真实 API 与视频服务</span></div></div><section class="section-head"><div><h2>最近编辑</h2><p>当前浏览器中保存的作品</p></div>${button('查看全部 →','library')}</section><div class="recent-list">${data.novels.slice().sort((a,b)=>b.updated.localeCompare(a.updated)).slice(0,4).map(n=>`<button class="recent-item" data-open="${n.id}"><span class="mini-cover">${esc(n.title[0])}</span><span><b>${esc(n.title)}</b><small>${esc(n.style)} · ${n.chapters.length} 章</small></span><span class="recent-time">${new Date(n.updated).toLocaleDateString('zh-CN')}　→</span></button>`).join('')||empty('还没有作品','先创建一部作品，可以不上传封面。',button('创建第一部作品','create',true))}</div><div class="notice"><b>当前是交互原型</b><span>数据仅保存在此浏览器。模型请求与视频生成尚未接入云端应用，页面不会发送付费请求。</span></div>`;
+}
+function renderShelf(){
+ const items=data.novels.filter(n=>n.title.toLowerCase().includes(search.toLowerCase())&&(filter==='all'||n.style===filter));
+ $('shelf-title').textContent=`作品库 · ${data.novels.length}`;
+ $('covers').innerHTML=items.map(n=>`<article class="cover-card"><button class="cover" data-open="${n.id}" aria-label="打开作品 ${esc(n.title)}">${n.cover?`<img class="cover-img" alt="" src="${esc(n.cover)}">`:`<div class="cover-pattern" aria-hidden="true"><small>映章 · 原创故事</small><strong>${esc(n.title)}</strong><i>STORY TO FRAME</i></div>`}</button><div class="book-caption"><div><b>${esc(n.title)}</b><small>${esc(n.style)} · ${n.chapters.length} 章</small></div><button class="icon-btn" data-edit="${n.id}" aria-label="编辑 ${esc(n.title)}">•••</button></div></article>`).join('')+`<button class="cover-add" data-action="create"><span>＋</span><small>新建作品</small></button>`;
+ $('no-matches').hidden=items.length>0||!data.novels.length;
+}
+function openBook(id){if(!leaveDraft())return;closeEditor();route='text';currentId=id;tab='source';chapterId=current()?.chapters[0]?.id||null;render();}
+function openEditor(id=null){if(!leaveDraft())return;editingId=id;editDraft=id?structuredClone(data.novels.find(n=>n.id===id)):{id:uid(),title:'',style:'国风动画',cover:'',characters:[],chapters:[],updated:new Date().toISOString()};dirty=false;
+ $('drawer-title').textContent=id?'编辑作品':'新建作品';$('edit-title').value=editDraft.title;$('edit-style').value=editDraft.style;$('edit-cover').value='';$('delete-novel').classList.toggle('hidden',!id);$('create-hint').classList.add('hidden');showCover();renderCast(editDraft.characters);$('novel-drawer').hidden=false;requestAnimationFrame(()=>$('novel-drawer').classList.add('open'));$('edit-title').focus();
+}
+function showCover(){$('cover-preview').innerHTML=editDraft.cover?`<img alt="封面预览" src="${esc(editDraft.cover)}"><span>更换封面</span>`:'<span class="upload-placeholder">＋<br>上传封面<br><small>选填 · JPG / PNG / WebP</small></span>';}
+function renderCast(rows){$('cast-body').innerHTML=rows.length?rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.appearance)}</td><td>${esc(r.costume)}</td><td>${esc(r.source)}</td></tr>`).join(''):'<tr><td class="empty" colspan="4">暂无已确认的角色资料。分析结果需人工确认后再采用。</td></tr>';}
+function saveBook(){const title=$('edit-title').value.trim();if(!title){$('create-hint').textContent='请填写作品名称，封面可以稍后添加。';$('create-hint').classList.remove('hidden');$('edit-title').focus();return;}editDraft.title=title;editDraft.style=$('edit-style').value;editDraft.updated=new Date().toISOString();const i=data.novels.findIndex(n=>n.id===editingId);if(i>=0)data.novels[i]=editDraft;else data.novels.push(editDraft);const ok=persist();closeEditor();renderShelf();if(ok)notify('作品已保存到当前浏览器。');}
+function removeBook(){if(!editingId||!confirm(`删除《${editDraft.title}》及其章节？此操作无法撤销，请先导出备份。`))return;data.novels=data.novels.filter(n=>n.id!==editingId);persist();closeEditor();renderShelf();notify('作品已删除。');}
+function chapterBar(){return `<div class="chapter-bar"><label>当前章节 <select id="chapter-select"><option value="">＋ 新章节</option>${current().chapters.map(c=>`<option value="${c.id}" ${c.id===chapterId?'selected':''}>${esc(c.title)}</option>`).join('')}</select></label>${button('＋ 新章节','new-chapter')}<span class="muted">${esc(current().style)} · ${current().chapters.length} 章</span></div>`;}
+function renderBook(){
+ document.querySelectorAll('[data-text]').forEach(b=>{b.classList.toggle('active',b.dataset.text===tab);b.setAttribute('aria-selected',String(b.dataset.text===tab));});
+ document.querySelectorAll('[data-text-page]').forEach(p=>p.classList.toggle('hidden',p.dataset.textPage!==tab));
+ const host=document.querySelector(`[data-text-page="${tab}"]`);let c=chapter();let content='';
+ if(tab==='source')content=`<div class="editor-grid"><section class="panel"><div class="section-head"><div><h2>章节原文</h2><p>保存正文后，再开始文本改编。</p></div><label class="btn">导入 TXT<input type="file" id="import-text" accept=".txt,text/plain" hidden></label></div><label class="field">章节标题<input id="chapter-title" maxlength="100" value="${esc(c?.title||'')}" placeholder="例如：第一章 · 山雨欲来"></label><label class="field">正文<textarea id="chapter-text" class="manuscript" placeholder="粘贴这一章的故事……">${esc(c?.text||'')}</textarea></label><div class="editor-footer"><span id="word-count">${(c?.text||'').replace(/\s/g,'').length} 字</span><span id="save-state">${c?'已保存至浏览器':'尚未保存'}</span></div><label class="field">可选前情<textarea id="chapter-context" rows="3" placeholder="仅填写理解本章所需的前情，不会自动读取其他章节。">${esc(c?.context||'')}</textarea></label><div class="actions">${button('保存章节','save-chapter',true)}${button('前往文本任务 →','tasks')}</div></section><aside class="panel guidance"><div class="eyebrow">创作提示</div><h3>先忠于故事，再让画面发生。</h3><ol><li>每次处理一章，保留原文段落与对话。</li><li>前情由你主动补充，避免自动混入其他章节。</li><li>角色形象需要确认，保持跨镜头一致。</li></ol><hr><span class="badge">浏览器原型</span><p>保存可在刷新后恢复。清除浏览器数据会删除本地记录，建议定期导出备份。</p></aside></div>`;
+ else if(tab==='analysis')content=`<div class="panel"><div class="section-head"><div><h2>本章分析与角色资料</h2><p>分析结果绑定章节和原文版本，角色资料确认后用于后续镜头。</p></div>${badge('尚未分析')}</div>${empty('还没有分析结果',c?'章节已保存。接通真实模型后，可在此审阅事件、人物、引用和存疑项。':'请先在「章节原文」保存一章。',button('返回章节原文','source'))}<div class="notice">角色关系与原文依据属于本章；角色外观、服装和参考图作为作品资料维护，不自动覆盖已确认版本。</div></div>`;
+ else if(tab==='outline'||tab==='shots')content=`<div class="panel"><div class="section-head"><div><h2>${tab==='outline'?'改编大纲':'分镜工作台'}</h2><p>${tab==='outline'?'按场景组织冲突、动作与信息揭示。':'逐镜审阅景别、动作、连续性与提示词。'}</p></div>${badge('暂无生成结果')}</div>${empty(tab==='outline'?'故事还没有改编成场景':'镜头，等待故事落笔。','原型不会伪造模型结果。先保存章节，再配置线上模型。',button('查看文本任务','tasks',true))}</div>`;
+ else content=`<section class="panel"><div class="section-head"><div><h2>文本任务</h2><p>分析 → 大纲 → 分镜与提示词 → 复核</p></div>${badge('未连接','amber')}</div><div class="task-summary"><div><small>当前章节</small><b>${esc(c?.title||'尚未保存章节')}</b></div><div><small>语言模型</small><b>${esc(data.profiles.find(p=>p.id===data.activeProfile)?.model||'未配置')}</b></div><div><small>执行方式</small><b>线上 API · 云端执行</b></div></div><div class="notice"><b>此文件为页面原型</b><span>保存的配置不会同步到云服务器。这里不创建真实任务、不扣费，也不展示模拟成功结果。</span></div><div class="actions"><button class="btn primary" disabled title="需接入云端应用后使用">提交文本改编 · 待接入</button>${button('配置模型 →','models')}</div></section><section class="panel task-empty">${empty('暂无执行记录','真实接入后显示阶段、更新时间、失败原因和执行尝试；重试保留已保存结果。')}</section>`;
+ host.innerHTML=chapterBar()+content;
+ $('chapter-select').addEventListener('change',e=>{if(!leaveDraft()){e.target.value=chapterId||'';return;}dirty=false;chapterId=e.target.value||null;renderBook();});
+ if(tab==='source'){
+ ['chapter-title','chapter-text','chapter-context'].forEach(id=>$(id).addEventListener('input',()=>{dirty=true;$('save-state').textContent='有未保存的修改';$('word-count').textContent=$('chapter-text').value.replace(/\s/g,'').length+' 字';}));
+ $('import-text').addEventListener('change',async e=>{const f=e.target.files[0];if(!f)return;if(f.size>2*1024*1024){notify('TXT 文件需小于 2 MB。');return;}try{const text=new TextDecoder('utf-8',{fatal:true}).decode(await f.arrayBuffer());if(text.includes('\0'))throw Error();if($('chapter-text').value&&!confirm('用文件内容替换当前正文？'))return;$('chapter-text').value=text;$('chapter-text').dispatchEvent(new Event('input'));notify('正文已载入，记得保存章节。');}catch{notify('请使用 UTF-8 编码的 TXT 文件。');}});
+ }
+}
+function saveChapter(){const title=$('chapter-title').value.trim(),text=$('chapter-text').value;if(!title||!text.trim()){notify('请填写章节标题与正文。');return;}if(new Blob([text]).size>2*1024*1024){notify('正文不能超过 2 MB。');return;}const old=chapter();const item={id:old?.id||uid(),title,text,context:$('chapter-context').value,revision:(old?.revision||0)+1};if(old)Object.assign(old,item);else current().chapters.push(item);chapterId=item.id;current().updated=new Date().toISOString();const ok=persist();dirty=false;renderBook();if(ok)notify('章节已保存 · v'+item.revision);}
+function renderModels(){const p=data.activeProfile==='__new__'?{}:(data.profiles.find(p=>p.id===data.activeProfile)||data.profiles[0]||{});
+ $('workspace').innerHTML=`<div class="section-head"><div><div class="eyebrow">SETTINGS / MODELS</div><h2>让合适的模型，参与创作。</h2><p>当前优先使用线上 API；视频模型由 Windows 上的 ComfyUI 提供。</p></div>${badge('配置原型 · 未连接','amber')}</div><div class="settings-grid"><section class="panel"><h3>语言模型</h3><label class="field">已保存配置<select id="profile-select"><option value="">＋ 新建线上配置</option>${data.profiles.map(x=>`<option value="${x.id}" ${x.id===p.id?'selected':''}>${esc(x.name)} · ${esc(x.model)}</option>`).join('')}</select></label><form id="profile-form"><div class="field-row"><label class="field">配置名称<input id="profile-name" required maxlength="60" value="${esc(p.name||'线上模型')}"></label><label class="field">协议<select id="profile-protocol"><option value="chat_completions">OpenAI Chat Completions</option><option value="responses">OpenAI Responses</option></select></label></div><label class="field">API Base URL<input id="profile-url" required type="url" placeholder="https://api.example.com/v1" value="${esc(p.url||'')}"></label><label class="field">模型 ID<input id="profile-model" required placeholder="服务商提供的实际模型标识" value="${esc(p.model||'')}"></label><label class="field">API Key 环境变量名<input id="profile-env" required value="${esc(p.env||'NOVEL_LLM_API_KEY')}"><small>这里只填变量名称。实际密钥由云端执行器读取，不放入浏览器或导出文件。</small></label><div class="field-row"><label class="field">请求超时（秒）<input id="profile-timeout" type="number" min="10" max="1800" value="${p.timeout||180}" required></label><label class="field">最大输出 token<input id="profile-tokens" type="number" min="256" max="131072" value="${p.tokens||8192}" required></label></div><div class="actions"><button class="btn primary" type="submit">保存配置草案</button><button class="btn" type="button" disabled title="原型未接入模型 API">连接测试 · 待接入</button></div></form></section><aside><section class="panel"><h3>ComfyUI 视频工作流</h3>${badge('Windows · 待接入')}<p class="muted">保留本地 GPU 的视频生成能力。需确认 Windows 地址和已跑通的 API 工作流后再开放执行。</p><label class="field">服务地址<input disabled placeholder="待配置 Windows 服务地址"></label><button class="btn" disabled>保存视频配置 · 待接入</button></section><div class="notice"><span>线上模型、LM Studio 与 ComfyUI 独立配置。不会自动回退本地模型或切换服务商。</span></div></aside></div>`;
+ $('profile-protocol').value=p.protocol||'chat_completions';
+ $('profile-select').value=p.id||'';
+ $('profile-select').addEventListener('change',e=>{data.activeProfile=e.target.value;if(!data.activeProfile){data.activeProfile='__new__';}renderModelsNew(e.target.value);});
+ $('profile-form').addEventListener('submit',e=>{e.preventDefault();try{const url=new URL($('profile-url').value.trim());if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash)throw Error();const env=$('profile-env').value.trim();if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(env)||/^sk[-_]/i.test(env)){notify('请填写合法环境变量名，例如 NOVEL_LLM_API_KEY，不要填写密钥。');return;}const item={id:p.id||uid(),name:$('profile-name').value.trim(),url:url.href.replace(/\/$/,''),model:$('profile-model').value.trim(),env,protocol:$('profile-protocol').value,timeout:Number($('profile-timeout').value),tokens:Number($('profile-tokens').value)};if(!item.name||!item.model){notify('配置名称和模型 ID 不能为空。');return;}const i=data.profiles.findIndex(x=>x.id===item.id);if(i>=0)data.profiles[i]=item;else data.profiles.push(item);data.activeProfile=item.id;const ok=persist();renderModels();if(ok)notify('配置草案已保存在浏览器，尚未同步云端或连接。');}catch{notify('请输入不含账号、查询参数或片段的 HTTPS API 地址。');}});
+}
+function renderModelsNew(id){renderModels();}
+function renderPrompts(){const names={analysis:'本章分析',outline:'改编大纲',shots:'分镜与提示词',review:'结果复核'};$('workspace').innerHTML=`<div class="section-head"><div><div class="eyebrow">SETTINGS / PROMPTS</div><h2>保留创作偏好，也保留故事依据。</h2><p>按阶段维护提示词草案；修改不会自动覆盖已保存结果。</p></div>${badge('草案 v1')}</div><form id="prompt-form"><div class="prompt-grid">${Object.entries(names).map(([key,name],i)=>`<section class="panel"><h3><span class="step-number">0${i+1}</span>${name}</h3><label class="field"><span class="sr-only">${name}提示词</span><textarea id="prompt-${key}" rows="5" maxlength="20000" required>${esc(data.templates[key])}</textarea></label></section>`).join('')}</div><div class="actions"><button class="btn primary" type="submit">保存提示词草案</button><span class="muted">仅保存在浏览器，尚未接入实际生成流程。</span></div></form>`;$('prompt-form').addEventListener('submit',e=>{e.preventDefault();for(const key of Object.keys(names))data.templates[key]=$('prompt-'+key).value; if(persist())notify('提示词草案已保存。');});}
+function renderUnavailable(){const isVideo=route==='video';$('workspace').innerHTML=`<div class="panel">${empty(isVideo?'把分镜交给画面，还需要连接工作流。':'人物与场景，即将在这里成形。',isVideo?'Windows ComfyUI 尚未接入。后续会展示逐镜队列、执行进度、失败重试与输出视频。':'文生图功能尚未接入。后续用于角色参考、场景与关键帧素材。',button('查看模型配置','models'))}<div class="notice"><span>${isVideo?'视频任务与文本任务分开管理。提交中、未知、失败和已完成应分别显示。':'当前不提供图片生成按钮，避免把原型交互误认为真实模型调用。'}</span></div></div>`;}
+// Navigation and page-level actions use delegation to survive re-rendering.
+document.addEventListener('click',e=>{const nav=e.target.closest('[data-nav]');if(nav){go(nav.dataset.nav);return;}const b=e.target.closest('[data-action],[data-open],[data-edit],[data-text]');if(!b)return;if(b.dataset.open){openBook(b.dataset.open);return;}if(b.dataset.edit){openEditor(b.dataset.edit);return;}if(b.dataset.text){if(!leaveDraft())return;dirty=false;tab=b.dataset.text;renderBook();return;}const a=b.dataset.action;if(a==='library')go('text');else if(a==='create'){if(route!=='text'){if(!leaveDraft())return;closeEditor();route='text';currentId=null;render();}openEditor();}else if(a==='save-chapter')saveChapter();else if(a==='new-chapter'){if(leaveDraft()){dirty=false;chapterId=null;tab='source';renderBook();}}else if(['tasks','source'].includes(a)){if(leaveDraft()){dirty=false;tab=a;renderBook();}}else if(a==='models')go('models');else if(a==='export')exportData();});
+$('back-novels').addEventListener('click',()=>go('text'));
+$('close-drawer').addEventListener('click',()=>{if(leaveDraft())closeEditor();});
+$('save-novel').addEventListener('click',()=>saveBook());$('delete-novel').addEventListener('click',()=>removeBook());
+['edit-title','edit-style'].forEach(id=>$(id).addEventListener('input',()=>dirty=true));
+$('cover-preview').addEventListener('click',()=>$('edit-cover').click());
+$('edit-cover').addEventListener('change',e=>{const file=e.target.files[0],target=editDraft;if(!file||!target)return;if(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>2*1024*1024){notify('请上传 2 MB 以内的 JPG、PNG 或 WebP 图片。');return;}const reader=new FileReader();reader.onerror=()=>notify('封面读取失败，请重试。');reader.onload=()=>{if(target!==editDraft)return;target.cover=String(reader.result);dirty=true;showCover();};reader.readAsDataURL(file);});
+$('book-search').addEventListener('input',e=>{search=e.target.value;renderShelf();});$('book-filter').addEventListener('change',e=>{filter=e.target.value;renderShelf();});
+window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('novel-drawer').hidden&&leaveDraft())closeEditor();if((e.metaKey||e.ctrlKey)&&e.key==='s'&&route==='text'&&currentId&&tab==='source'){e.preventDefault();saveChapter();}});
+render();if(storageWarning)notify(storageWarning);
+
+</script>
+<script src="/cloud.js"></script></body>
+</html>
