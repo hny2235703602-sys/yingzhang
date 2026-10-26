@@ -264,42 +264,34 @@ def source_page(
 def task_submit(
     service: StudioService, chapter: dict[str, Any] | None, profiles: dict[str, dict[str, Any]]
 ) -> None:
-    with st.expander("＋ 创建文本改编任务", expanded=True):
-        if not chapter:
-            st.info("请先在「章节原文」保存章节。")
-            return
-        if not profiles:
-            st.info("请先在「模型与工作流」保存模型配置。")
-            return
-        with st.form(f"submit_{chapter['id']}"):
-            profile_id = st.selectbox(
-                "采用模型配置",
-                list(profiles),
-                format_func=lambda key: f"{key} · {profiles[key].get('model', '未配置模型')}",
-            )
-            cols = st.columns(2)
-            style = cols[0].selectbox("视觉风格", ["二维动画", "日系动画", "国风动画", "写实动画"])
-            ratio = cols[1].selectbox("画幅", ["16:9", "9:16", "1:1", "4:3"])
-            preference = st.text_area(
-                "改编偏好（可选）",
-                height=85,
-                placeholder="例如：保留悬念，将内心独白转化为可见动作。",
-            )
-            st.caption(
-                f"将提交已保存的原文 v{chapter['revision']}，并保存模型、风格与角色资料快照。"
-            )
-            submitted = st.form_submit_button("提交文本任务", type="primary")
-            if submitted:
-                token_key = f"submit_token_{chapter['id']}"
-                token = st.session_state.setdefault(token_key, uuid.uuid4().hex)
+    """Start adaptation from the page the author is reading. The task page only shows records."""
+    if not chapter:
+        st.info("请先在「章节原文」保存章节，再开始改编。")
+        return
+    if not profiles:
+        st.info("请先在「模型与工作流」保存模型配置。")
+        return
+    profile_ids = list(profiles)
+    profile_id = profile_ids[0]
+    if len(profile_ids) > 1:
+        profile_id = st.selectbox(
+            "采用模型配置",
+            profile_ids,
+            format_func=lambda key: f"{key} · {profiles[key].get('model', '未配置模型')}",
+            key=f"run_profile_{chapter['id']}",
+        )
+    st.caption(f"将使用已保存的原文 v{chapter['revision']}、当前模型配置和提示词。")
+    if st.button("开始文本改编", type="primary", key=f"start_run_{chapter['id']}"):
+        token_key = f"submit_token_{chapter['id']}"
+        token = st.session_state.setdefault(token_key, uuid.uuid4().hex)
 
-                def submit() -> None:
-                    service.create_run(
-                        chapter["id"], profiles[profile_id], style, ratio, preference, token
-                    )
-                    st.session_state[token_key] = uuid.uuid4().hex
+        def submit() -> None:
+            service.create_run(
+                chapter["id"], profiles[profile_id], "国风动画", "16:9", "", token
+            )
+            st.session_state[token_key] = uuid.uuid4().hex
 
-                execute(submit, "文本任务已入队。需要独立 worker 在线执行，界面不会启动执行器。")
+        execute(submit, "任务已提交。可在「文本任务」查看进度与详情。")
 
 
 @st.fragment(run_every="3s")
@@ -308,7 +300,7 @@ def task_monitor(service: StudioService, chapter_id: str) -> None:
     st.subheader("文本运行记录")
     st.caption("每 3 秒读取持久化状态。完成仅表示文本阶段完成，视频仍未提交。")
     if not runs:
-        st.info("暂无文本任务。保存配置后提交第一条任务。")
+        st.info("暂无执行记录。在章节原文、大纲、分镜或分析页点击「开始文本改编」。")
         return
     summary = st.columns(3)
     summary[0].metric("文本运行", len(runs))
@@ -359,7 +351,7 @@ def outline_page(run: dict[str, Any] | None) -> None:
     run = run or {}
     outline = (run.get("result") or {}).get("outline")
     if not outline:
-        st.info("暂无改编大纲。请先保存章节并提交文本任务，执行完成后在此审阅。")
+        st.info("暂无改编大纲。保存章节后，可在本页直接开始文本改编。")
         return
     st.subheader("故事梗概")
     render_value(outline.get("synopsis"))
@@ -379,7 +371,7 @@ def shots_page(service: StudioService, run: dict[str, Any] | None) -> None:
     result = run.get("result") or {}
     shots = result.get("shots") or []
     if not shots:
-        st.info("这里会成为你的分镜工作台。当前没有真实分镜结果，请先完成文本任务。")
+        st.info("当前没有真实分镜结果。保存章节后，可在本页直接开始文本改编。")
         st.button("生成镜头视频 · 首期未开放", disabled=True)
         return
     cols = st.columns(3)
@@ -858,14 +850,18 @@ def main() -> None:
             st.success(notice)
         if page == "章节原文":
             source_page(service, work_id, chapter)
+            task_submit(service, chapter, profiles)
         elif page == "改编大纲":
+            task_submit(service, chapter, profiles)
             outline_page(run)
         elif page == "分镜工作台":
+            task_submit(service, chapter, profiles)
             shots_page(service, run)
         elif page == "本章分析与角色资料":
+            task_submit(service, chapter, profiles)
             analysis_page(service, work_id, run)
         elif page == "文本任务":
-            task_submit(service, chapter, profiles)
+            st.caption("这里只查看进度、失败原因和已保存阶段。开始改编请在章节原文、大纲、分镜或分析页操作。")
             if chapter_id:
                 task_monitor(service, chapter_id)
         else:

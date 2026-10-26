@@ -72,8 +72,7 @@ def test_submit_and_pause_use_real_service_without_worker(ui_service: StudioServ
     )
     app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=20).run()
     app.selectbox(key=f"chapter_choice_{work}").set_value(chapter).run()
-    app.radio[0].set_value("文本任务").run()
-    next(button for button in app.button if button.label == "提交文本任务").click().run()
+    next(button for button in app.button if button.label == "开始文本改编").click().run()
     assert_clean(app)
     runs = ui_service.list_runs(chapter)
     assert len(runs) == 1
@@ -81,6 +80,7 @@ def test_submit_and_pause_use_real_service_without_worker(ui_service: StudioServ
     assert runs[0]["document"]["text"] == "少年走进庭院。"
     app.run()
     assert len(ui_service.list_runs(chapter)) == 1
+    app.radio[0].set_value("文本任务").run()
     next(button for button in app.button if button.label == "暂停").click().run()
     assert_clean(app)
     assert ui_service.list_runs(chapter)[0]["status"] == "pause_requested"

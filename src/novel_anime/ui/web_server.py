@@ -131,6 +131,10 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
         timeout = float(body.get("timeout", 120))
         if not 10 <= timeout <= 600:
             raise AppError("invalid_input", "超时范围为 10 到 600 秒。")
+        max_output = int(existing.get("max_output_tokens", 4000))
+        context_budget = int(body.get("context_budget", existing.get("context_budget", 16000)))
+        if context_budget <= max_output:
+            raise AppError("invalid_input", f"上下文预算须大于最大输出 {max_output} token。")
         profile = ModelProfile(
             **{
                 **existing,
@@ -141,6 +145,7 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
                 "model": body.get("model", "catalog"),
                 "timeout": timeout,
                 "temperature": body.get("temperature", 1),
+                "context_budget": context_budget,
                 "enabled": body.get("enabled", True),
                 "api_key_env": existing.get("api_key_env") or f"YINGZHANG_KEY_{ident}",
             }

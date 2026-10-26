@@ -44,18 +44,23 @@ class AdaptationFlow:
         self.save = save
         self.boundary = boundary
 
+    def _template(self, stage: str) -> str:
+        saved = self.document.get("prompt_templates", {}).get(stage)
+        if saved:
+            return str(saved)
+        return (ROOT / "prompts" / f"{stage}.txt").read_text(encoding="utf-8")
+
+    def _within_budget(self, schema: Any, stage: str, payload: dict[str, Any]) -> bool:
+        # CJK costs more than JSON punctuation. A flat two tokens per character
+        # rejected a few thousand characters of short dialogue before any model call.
+        return self.client.request_tokens(self._template(stage), payload, schema) <= (
+            self.profile.context_budget - self.profile.max_output_tokens
+        )
+
     def call(self, result: dict[str, Any], schema: Any, stage: str, payload: dict[str, Any]) -> Any:
         self.boundary(stage)
-        template = self.document.get("prompt_templates", {}).get(stage) or (
-            ROOT / "prompts" / f"{stage}.txt"
-        ).read_text(encoding="utf-8")
-        # Conservative character budget: CJK characters can consume multiple tokens.
-        import json
-
-        if (
-            len(json.dumps(payload, ensure_ascii=False))
-            > (self.profile.context_budget - self.profile.max_output_tokens) // 2
-        ):
+        template = self._template(stage)
+        if not self._within_budget(schema, stage, payload):
             raise AppError(
                 "context_budget", "当前阶段内容超过保守上下文预算，请提高预算或缩短章节。"
             )
@@ -97,34 +102,31 @@ class AdaptationFlow:
         if "analysis" in result:
             return {"result": result}
         # Paragraph boundaries remain stable even when analysis runs in smaller chunks.
-        limit = max(200, (self.profile.context_budget - self.profile.max_output_tokens) // 3)
         chunks: list[list[dict[str, Any]]] = [[]]
-        length = 0
         for paragraph in result["paragraphs"]:
-            size = len(paragraph["text"])
-            if size > limit:
+            single = self._analysis_payload([paragraph], [], 0)
+            if not self._within_budget(Analysis, "analysis", single):
                 raise AppError(
                     "paragraph_too_long", "某一段超过上下文预算，请增大预算或按语义换行。"
                 )
-            if length + size > limit and chunks[-1]:
+            if chunks[-1] and not self._within_budget(
+                Analysis,
+                "analysis",
+                self._analysis_payload(chunks[-1] + [paragraph], [], len(chunks) - 1),
+            ):
                 chunks.append([])
-                length = 0
             chunks[-1].append(paragraph)
-            length += size
         parts = result.setdefault("analysis_parts", [])
         for index in range(len(parts), len(chunks)):
             extracted = self.call(
                 result,
                 Analysis,
                 "analysis",
-                {
-                    "paragraphs": chunks[index],
-                    "optional_context": self.document["context"],
-                    "existing_characters": parts[-1].get("characters", []) if parts else [],
-                    "id_instruction": (
-                        f"事件ID以 B{index + 1}_ 开头，角色沿用已知ID或以 C{index + 1}_ 开头。"
-                    ),
-                },
+                self._analysis_payload(
+                    chunks[index],
+                    parts[-1].get("characters", []) if parts else [],
+                    index,
+                ),
             )
             parts.append(extracted.model_dump())
             self.save(result, f"analysis {index + 1}/{len(chunks)}")
@@ -209,13 +211,16 @@ class AdaptationFlow:
                 if scene_id in review_parts:
                     continue
                 scene_shots = [s for s in result["shots"] if s["scene_id"] == scene_id]
-                review = self.call(
-                    result,
-                    Review,
-                    "review",
-                    {"analysis": result["analysis"], "scene": scene, "shots": scene_shots},
-                )
-                review_parts[scene_id] = review.model_dump()
+                issues: list[str] = []
+                for group in self._review_groups(result, scene, scene_shots):
+                    review = self.call(
+                        result,
+                        Review,
+                        "review",
+                        self._review_payload(result, scene, group),
+                    )
+                    issues.extend(review.issues)
+                review_parts[scene_id] = {"issues": issues}
                 self.save(result, f"review {scene_id}")
             result["review"] = {
                 "issues": [issue for part in review_parts.values() for issue in part["issues"]]
@@ -228,3 +233,56 @@ class AdaptationFlow:
         )
         self.save(result, "review")
         return {"result": result}
+
+    def _review_payload(
+        self, result: dict[str, Any], scene: dict[str, Any], shots: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        analysis = result["analysis"]
+        event_ids = set(scene.get("event_ids") or [])
+        events = [event for event in analysis.get("events", []) if event["event_id"] in event_ids]
+        character_ids = {cid for shot in shots for cid in shot.get("character_ids") or []}
+        characters = [
+            character
+            for character in analysis.get("characters", [])
+            if not character_ids or character["character_id"] in character_ids
+        ]
+        # The whole chapter analysis repeats on every scene and pushed later scenes over budget.
+        return {
+            "analysis": {
+                "summary": analysis.get("summary", ""),
+                "core_conflict": analysis.get("core_conflict", ""),
+                "characters": characters,
+                "events": events,
+                "uncertainties": analysis.get("uncertainties") or [],
+                "relations": analysis.get("relations") or [],
+            },
+            "scene": scene,
+            "shots": shots,
+        }
+
+    def _review_groups(
+        self, result: dict[str, Any], scene: dict[str, Any], shots: list[dict[str, Any]]
+    ) -> list[list[dict[str, Any]]]:
+        payload = self._review_payload(result, scene, shots)
+        if not shots or self._within_budget(Review, "review", payload):
+            return [shots]
+        groups: list[list[dict[str, Any]]] = [[]]
+        for shot in shots:
+            if groups[-1] and not self._within_budget(
+                Review, "review", self._review_payload(result, scene, groups[-1] + [shot])
+            ):
+                groups.append([])
+            groups[-1].append(shot)
+        return groups
+
+    def _analysis_payload(
+        self, chunk: list[dict[str, Any]], existing: list[Any], index: int
+    ) -> dict[str, Any]:
+        return {
+            "paragraphs": chunk,
+            "optional_context": self.document["context"],
+            "existing_characters": existing,
+            "id_instruction": (
+                f"事件ID以 B{index + 1}_ 开头，角色沿用已知ID或以 C{index + 1}_ 开头。"
+            ),
+        }

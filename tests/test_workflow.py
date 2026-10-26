@@ -200,6 +200,56 @@ def test_pause_at_boundary_then_resume_without_repeating_analysis(
     assert calls == ["analysis", "outline", "shots", "review"]
 
 
+def test_short_dialogue_chapter_fits_default_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    lines = [f"「第{i:03d}句」他应了一声，目光没有离开门口。" for i in range(160)]
+    text = "\n".join(lines)
+    assert len(text) > 3000
+    calls: list[str] = []
+
+    def generate(
+        self: LLMClient, schema: type[BaseModel], system: str, payload: dict[str, Any], stage: str
+    ) -> tuple[BaseModel, dict[str, Any]]:
+        calls.append(stage)
+        return fake_models()[stage], {"stage": stage}
+
+    monkeypatch.setattr(LLMClient, "generate", generate)
+    document = InputDocument(work_id="work", title="章节", text=text).model_dump()
+    profile = ModelProfile(
+        provider="local",
+        protocol="chat_completions",
+        base_url="http://localhost:1234/v1",
+        model="fake",
+        api_key_env="",
+    )
+    flow = AdaptationFlow(document, profile, lambda result, stage: None, lambda stage: None)
+    result = flow.run({}, InMemorySaver(), "dialogue-run")
+    assert calls == ["analysis", "outline", "shots", "review"]
+    assert "analysis" in result
+
+
+def test_single_paragraph_over_budget_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    def generate(
+        self: LLMClient, schema: type[BaseModel], system: str, payload: dict[str, Any], stage: str
+    ) -> tuple[BaseModel, dict[str, Any]]:
+        raise AssertionError("over-budget text must not be sent")
+
+    monkeypatch.setattr(LLMClient, "generate", generate)
+    document = InputDocument(work_id="work", title="章节", text="甲" * 30000).model_dump()
+    profile = ModelProfile(
+        provider="local",
+        protocol="chat_completions",
+        base_url="http://localhost:1234/v1",
+        model="fake",
+        api_key_env="",
+        context_budget=16000,
+        max_output_tokens=4000,
+    )
+    flow = AdaptationFlow(document, profile, lambda result, stage: None, lambda stage: None)
+    with pytest.raises(AppError) as caught:
+        flow.run({}, InMemorySaver(), "over-budget")
+    assert caught.value.code == "paragraph_too_long"
+
+
 def test_semantic_issues_require_review_instead_of_success(
     service: StudioService,
     monkeypatch: pytest.MonkeyPatch,
