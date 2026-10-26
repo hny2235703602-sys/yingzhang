@@ -49,10 +49,26 @@ def snapshot(service: StudioService) -> dict:
         }
         for key, p in service.load_profiles().items()
     ]
-    return {"novels": works, "profiles": profiles}
+    from novel_anime.core.settings import ROOT
+
+    saved = service._load_config("prompt_templates")
+    templates = {
+        stage: saved.get(stage) or (ROOT / "prompts" / f"{stage}.txt").read_text(encoding="utf-8")
+        for stage in ("analysis", "outline", "shots", "review")
+    }
+    return {"novels": works, "profiles": profiles, "templates": templates}
 
 
 def dispatch(service: StudioService, action: str, body: dict) -> dict:
+    if action == "prompts":
+        templates = {}
+        for stage in ("analysis", "outline", "shots", "review"):
+            value = body.get(stage)
+            if not isinstance(value, str) or not value.strip() or len(value) > 20000:
+                raise AppError("invalid_input", "每个阶段请填写 1 到 20000 字的提示词。")
+            templates[stage] = value.strip()
+        service._save_config("prompt_templates", templates)
+        return {"saved": True}
     if action == "work":
         title = str(body.get("title", "")).strip()
         if not title or len(title) > 200:
@@ -97,7 +113,11 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
         from novel_anime.integrations.language_models.client import LLMClient
 
         ident = body.get("id") or "online"
-        existing = service.load_profiles().get(ident, {})
+        existing = {
+            key: value
+            for key, value in service.load_profiles().get(ident, {}).items()
+            if key in ModelProfile.model_fields
+        }
         url = urlparse(str(body.get("url", "")))
         if (
             url.scheme != "https"
@@ -150,7 +170,7 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
         if not profile.get("enabled", True):
             raise AppError("model_disabled", "模型已关闭，请在设置中启用。")
         if not profile.get("api_key_env") or not resolve_key(profile["api_key_env"]):
-            raise AppError("missing_api_key", "云端尚未设置此配置的 API Key 环境变量。")
+            raise AppError("missing_api_key", "请在模型配置中填写 API Key 并保存设置。")
         ident = service.create_run(
             body["chapter_id"],
             profile,

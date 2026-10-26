@@ -137,6 +137,14 @@ class StudioService:
                 VisualProfile(**p) for p in self.list_visual_profiles(chapter["work_id"])
             ],
         ).model_dump()
+        from novel_anime.core.settings import ROOT
+
+        saved_templates = self._load_config("prompt_templates")
+        document["prompt_templates"] = {
+            stage: saved_templates.get(stage)
+            or (ROOT / "prompts" / f"{stage}.txt").read_text(encoding="utf-8")
+            for stage in ("analysis", "outline", "shots", "review")
+        }
         config = ModelProfile(**profile).model_dump()
         input_hash = digest({"document": document, "profile": config, "template": "1.0"})
         with self.sessions.begin() as session:

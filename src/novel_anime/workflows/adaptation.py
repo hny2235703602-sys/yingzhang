@@ -46,7 +46,9 @@ class AdaptationFlow:
 
     def call(self, result: dict[str, Any], schema: Any, stage: str, payload: dict[str, Any]) -> Any:
         self.boundary(stage)
-        template = (ROOT / "prompts" / f"{stage}.txt").read_text(encoding="utf-8")
+        template = self.document.get("prompt_templates", {}).get(stage) or (
+            ROOT / "prompts" / f"{stage}.txt"
+        ).read_text(encoding="utf-8")
         # Conservative character budget: CJK characters can consume multiple tokens.
         import json
 
