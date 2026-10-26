@@ -21,17 +21,7 @@ def main() -> None:
     worker = subprocess.Popen([sys.executable, "-m", "novel_anime.workers.main"], env=environment)
     try:
         subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "streamlit",
-                "run",
-                "app.py",
-                "--server.address",
-                "127.0.0.1",
-                "--server.port",
-                "8501",
-            ],
+            [sys.executable, "-m", "novel_anime.ui.web_server"],
             env=environment,
             check=True,
         )

@@ -268,7 +268,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    server = ThreadingHTTPServer(("127.0.0.1", 8502), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", 8501), Handler)
     server.serve_forever()
 
 

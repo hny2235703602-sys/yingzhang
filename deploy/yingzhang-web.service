@@ -11,7 +11,7 @@ WorkingDirectory=/opt/yingzhang
 EnvironmentFile=/etc/yingzhang/runtime.env
 Environment=PYTHONPATH=/opt/yingzhang/src
 ExecStartPre=/opt/yingzhang/.venv/bin/alembic upgrade head
-ExecStart=/opt/yingzhang/.venv/bin/python -m streamlit run app.py --server.address 127.0.0.1 --server.port 8501
+ExecStart=/opt/yingzhang/.venv/bin/python -m novel_anime.ui.web_server
 Restart=on-failure
 RestartSec=5
 UMask=0077
