@@ -25,7 +25,7 @@ from novel_anime.ui.export import export_json, export_markdown, safe_payload
 
 LOGGER = logging.getLogger(__name__)
 MAX_UPLOAD_BYTES = 2_000_000
-PAGES = ["章节原文", "改编大纲", "分镜工作台", "本章分析与角色资料", "文本任务", "模型与工作流"]
+PAGES = ["章节原文", "改编大纲", "分镜工作台", "本章分析与角色资料", "文本任务"]
 STATUS = {
     "pending": "等待执行",
     "queued": "等待执行",
@@ -142,7 +142,25 @@ def sidebar(service: StudioService) -> tuple[str | None, str | None, str]:
             else None
         )
         st.markdown('<div class="nav-caption">创 作 空 间</div>', unsafe_allow_html=True)
-        page = st.radio("页面导航", PAGES, label_visibility="collapsed", key="page")
+        if st.session_state.get("page") not in PAGES:
+            st.session_state["page"] = PAGES[0]
+        page = st.radio(
+            "页面导航", PAGES, label_visibility="collapsed", key="page",
+            on_change=lambda: st.session_state.update(settings_open=False),
+        )
+        st.divider()
+        st.markdown('<div class="nav-caption">设 置</div>', unsafe_allow_html=True)
+        st.button(
+            "模型与工作流", use_container_width=True,
+            type="primary" if st.session_state.get("settings_open") else "secondary",
+            on_click=lambda: st.session_state.update(settings_open=True),
+        )
+        if st.session_state.get("settings_open"):
+            page = "模型与工作流"
+            st.button(
+                "返回创作空间", use_container_width=True,
+                on_click=lambda: st.session_state.update(settings_open=False),
+            )
         st.divider()
         st.caption("本地创作 · 文本改编首期")
         st.caption("原文 → 本章分析 → 动漫改编 → 分镜审阅")
@@ -155,7 +173,10 @@ def header(page: str, chapter: dict[str, Any] | None, run: dict[str, Any] | None
     st.markdown(
         '<div class="eyebrow">YINGZHANG / LOCAL CREATIVE STUDIO</div>', unsafe_allow_html=True
     )
-    st.title(page)
+    st.title("设置" if page == "模型与工作流" else page)
+    if page == "模型与工作流":
+        st.caption("模型与工作流 · 全局配置")
+        return
     st.caption(title if not chapter else f"{chapter['title']} · 原文 v{chapter['revision']}")
     stages = ["原文理解", "本章分析", "动漫改编", "分镜与提示词", "视频 · 未开放"]
     st.markdown(

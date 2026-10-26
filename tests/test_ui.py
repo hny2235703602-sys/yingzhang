@@ -38,9 +38,16 @@ def test_persistent_chapter_and_six_pages(ui_service: StudioService) -> None:
     work = ui_service.list_works()[0]
     chapter = ui_service.list_chapters(work["id"])[0]
     assert ui_service.get_chapter(chapter["id"])["text"] == "少年走进庭院。"
-    for page in ["改编大纲", "分镜工作台", "本章分析与角色资料", "文本任务", "模型与工作流"]:
+    for page in ["改编大纲", "分镜工作台", "本章分析与角色资料", "文本任务"]:
         app.radio[0].set_value(page).run()
         assert_clean(app)
+    assert "模型与工作流" not in app.radio[0].options
+    next(button for button in app.button if button.label == "模型与工作流").click().run()
+    assert_clean(app)
+    assert app.title[0].value == "设置"
+    next(button for button in app.button if button.label == "返回创作空间").click().run()
+    assert_clean(app)
+    assert app.title[0].value == "文本任务"
     app.radio[0].set_value("章节原文").run()
     body = next(field for field in app.text_area if field.label == "章节正文")
     assert body.value == "少年走进庭院。"
@@ -90,7 +97,7 @@ def test_fetch_and_select_model(ui_service: StudioService, monkeypatch: pytest.M
 
     monkeypatch.setattr(LLMClient, "list_models", catalog)
     app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=20).run()
-    app.radio[0].set_value("模型与工作流").run()
+    next(button for button in app.button if button.label == "模型与工作流").click().run()
     next(field for field in app.text_input if field.label == "服务地址").set_value(
         "https://models.test/v1"
     )
