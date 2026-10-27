@@ -29,12 +29,21 @@ STATIC = Path(__file__).with_name("web")
 LOG = logging.getLogger(__name__)
 
 
-def snapshot_image_prompt(service: StudioService) -> str:
+def _default_prompt(filename: str) -> str:
+    """A missing shipped prompt must not break the whole workspace; the editor shows it empty."""
     from novel_anime.core.settings import ROOT
 
-    return service._load_config("media_prompt_templates").get("image") or (
-        ROOT / "prompts" / "shot_image.txt"
-    ).read_text(encoding="utf-8")
+    try:
+        return (ROOT / "prompts" / filename).read_text(encoding="utf-8")
+    except OSError:
+        LOG.warning("Shipped prompt is missing: prompts/%s", filename)
+        return ""
+
+
+def snapshot_image_prompt(service: StudioService) -> str:
+    return service._load_config("media_prompt_templates").get("image") or _default_prompt(
+        "shot_image.txt"
+    )
 
 
 def snapshot(service: StudioService) -> dict:
@@ -74,17 +83,12 @@ def snapshot(service: StudioService) -> dict:
                 "key_tail": stored[-4:] if len(stored) > 4 else "",
             }
         )
-    from novel_anime.core.settings import ROOT
-
     saved = service._load_config("prompt_templates")
-    templates = {
-        stage: saved.get(stage) or (ROOT / "prompts" / f"{stage}.txt").read_text(encoding="utf-8")
-        for stage in ("analysis", "outline", "shots", "review")
-    }
+    templates = {"script": saved.get("script") or _default_prompt("script.txt")}
     image_profile = service._load_config("image_profile")
     saved_media = service._load_config("media_prompt_templates")
     media_templates = {
-        kind: saved_media.get(kind) or (ROOT / "prompts" / filename).read_text(encoding="utf-8")
+        kind: saved_media.get(kind) or _default_prompt(filename)
         for kind, filename in (("image", "shot_image.txt"), ("video", "video.txt"))
     }
     if image_profile:
@@ -104,14 +108,38 @@ def snapshot(service: StudioService) -> dict:
 
 
 def dispatch(service: StudioService, action: str, body: dict) -> dict:
-    if action == "edit-stage":
-        ident = service.edit_stage(
-            str(body["run_id"]), str(body["stage"]), int(body["revision"]), body["value"]
+    if action == "save-script":
+        service.save_run_script(str(body["run_id"]), body["script"], int(body["revision"]))
+        return {"saved": True}
+    if action == "video-config":
+        aspect_ratio = str(body.get("aspect_ratio", "16:9"))
+        if aspect_ratio not in {"16:9", "9:16", "1:1"}:
+            raise AppError("invalid_input", "画幅只支持 16:9、9:16 或 1:1。")
+        target, ceiling = body.get("target_seconds", 15), body.get("max_seconds", 20)
+        if (
+            not isinstance(target, (int, float))
+            or not isinstance(ceiling, (int, float))
+            or type(target) is bool
+            or type(ceiling) is bool
+            or not 5 <= float(target) <= 60
+            or not float(target) <= float(ceiling) <= 60
+        ):
+            raise AppError("invalid_input", "目标时长需在 5 到 60 秒之间，且不超过单组上限。")
+        saved_video = service.load_video_config()
+        base_url = body.get("base_url")
+        service.save_video_config(
+            {
+                **saved_video,
+                "base_url": str(
+                    base_url if base_url is not None else saved_video.get("base_url", "")
+                )[:200],
+                "aspect_ratio": aspect_ratio,
+                "preset": "wan22_ti2v_5b",
+                "target_seconds": float(target),
+                "max_seconds": float(ceiling),
+            }
         )
-        return {"id": ident}
-    if action == "confirm-stage":
-        service.confirm_stage(str(body["run_id"]), str(body["stage"]), int(body["revision"]))
-        return {"confirmed": True}
+        return {"saved": True}
     if action == "select-shot-image":
         service.select_shot_image(str(body["run_id"]), str(body["shot_id"]), str(body["asset_id"]))
         return {"selected": True}
@@ -320,13 +348,10 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
             return {"saved": True}
         if category != "text":
             raise AppError("invalid_input", "提示词配置类型不正确。")
-        templates = {}
-        for stage in ("analysis", "outline", "shots", "review"):
-            value = body.get(stage)
-            if not isinstance(value, str) or not value.strip() or len(value) > 20000:
-                raise AppError("invalid_input", "每个阶段请填写 1 到 20000 字的提示词。")
-            templates[stage] = value.strip()
-        service._save_config("prompt_templates", templates)
+        value = body.get("script")
+        if not isinstance(value, str) or not value.strip() or len(value) > 20000:
+            raise AppError("invalid_input", "故事脚本提示词请填写 1 到 20000 字。")
+        service._save_config("prompt_templates", {"script": value.strip()})
         return {"saved": True}
     if action == "work":
         title = str(body.get("title", "")).strip()
@@ -378,18 +403,28 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
             if key in ModelProfile.model_fields
         }
         url = urlparse(str(body.get("url", "")))
+        loopback = url.hostname in {"127.0.0.1", "localhost", "::1"}
         if (
-            url.scheme != "https"
+            url.scheme not in ({"http", "https"} if loopback else {"https"})
             or not url.netloc
             or url.username
             or url.password
             or url.query
             or url.fragment
         ):
-            raise AppError("invalid_input", "请填写不含账号、查询参数的 HTTPS API 地址。")
+            raise AppError(
+                "invalid_input",
+                "本机服务可填 http://127.0.0.1:端口/v1；远程服务须使用 HTTPS，"
+                "且地址不得包含账号或查询参数。",
+            )
         timeout = float(body.get("timeout", 120))
-        if not 10 <= timeout <= 600:
-            raise AppError("invalid_input", "超时范围为 10 到 600 秒。")
+        if not 10 <= timeout <= 3600:
+            raise AppError("invalid_input", "超时范围为 10 到 3600 秒。")
+        effort = body.get("reasoning_effort")
+        if effort in {"", None}:
+            effort = None
+        elif effort not in {"none", "minimal", "low", "medium", "high"}:
+            raise AppError("invalid_input", "思考强度只能是 none/minimal/low/medium/high。")
         if "max_output" in body or "context_budget" in body:
             max_output = int(body.get("max_output", existing.get("max_output_tokens", 8000)))
             if not 256 <= max_output <= 128000:
@@ -413,6 +448,9 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
                 "max_output_tokens": max_output,
                 "context_budget": context_budget,
                 "enabled": body.get("enabled", True),
+                "reasoning_effort": effort
+                if effort is not None
+                else existing.get("reasoning_effort"),
                 "api_key_env": existing.get("api_key_env") or f"YINGZHANG_KEY_{ident}",
             }
         )
@@ -517,7 +555,7 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
             body.get("aspect_ratio", "16:9"),
             body.get("preference", ""),
             body["idempotency_key"],
-            target_stage=body.get("stage", "analysis"),
+            target_stage=body.get("stage", "script"),
             source_run_id=body.get("source_run_id"),
             source_revision=body.get("source_revision"),
             selected_stages=body.get("selected_stages"),
@@ -777,6 +815,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(200, service.list_runs(path.removeprefix("/api/runs/")))
             elif path.startswith("/api/overview/"):
                 self.json(200, service.chapter_overview(path.removeprefix("/api/overview/")))
+            elif path.startswith("/api/video/"):
+                self.json(200, service.video_plan(path.removeprefix("/api/video/")))
             elif path.startswith("/assets/shots/"):
                 from sqlalchemy import select
 
@@ -836,6 +876,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, (STATIC / name).read_bytes(), mime + "; charset=utf-8")
             else:
                 self.send(404, b"Not found", "text/plain")
+        except AppError as exc:
+            # A missing chapter is a client-side id problem, not a broken database.
+            self.json(
+                404 if exc.code == "not_found" else 400,
+                {"error": exc.message, "code": exc.code},
+            )
         except Exception:
             LOG.exception("Web read failed")
             self.send(500, b'{"error":"Unable to load data"}', "application/json")

@@ -4,94 +4,93 @@ import pytest
 from pydantic import ValidationError
 
 from novel_anime.domain.models import (
-    Analysis,
-    Character,
     InputDocument,
     ModelProfile,
-    Outline,
-    Scene,
-    Shot,
+    ScriptCharacter,
+    ScriptRow,
+    ScriptShot,
     SourceParagraph,
-    StoryEvent,
+    StoryScript,
 )
-from novel_anime.domain.validation import validate_storyboard
+from novel_anime.domain.validation import MAX_SHOT_SECONDS, validate_script
 
 
-def storyboard() -> tuple[Analysis, Outline, list[Shot], list[SourceParagraph]]:
+def script() -> tuple[StoryScript, list[SourceParagraph]]:
     paragraphs = [SourceParagraph(paragraph_id="P0001", text="少年推开殿门。")]
-    analysis = Analysis(
-        summary="少年入殿",
-        characters=[
-            Character(
-                character_id="hero",
-                name="少年",
-                description="推门者",
-                source_paragraph_ids=["P0001"],
-            )
-        ],
-        events=[
-            StoryEvent(
-                event_id="EV001",
-                description="推开殿门",
-                importance="must",
-                source_paragraph_ids=["P0001"],
-            )
-        ],
+    return (
+        StoryScript(
+            characters=[
+                ScriptCharacter(
+                    character_id="hero", name="少年", appearance="黑发，眉骨高", costume="蓝袍"
+                )
+            ],
+            shots=[
+                ScriptShot(
+                    shot_id="SH001",
+                    order=1,
+                    duration_seconds=5,
+                    shot_size="中景",
+                    camera="缓慢推进",
+                    frame="少年双手推在殿门板上，门缝里透出微光",
+                    action="少年推开殿门",
+                    dialogue="少年：“有人吗？”",
+                    character_ids=["hero"],
+                    setting="大殿门外，雨夜",
+                    source_paragraph_ids=["P0001"],
+                )
+            ],
+        ),
+        paragraphs,
     )
-    outline = Outline(
-        synopsis="入殿",
-        scenes=[
-            Scene(
-                scene_id="SC001",
-                title="殿门",
-                location="殿外",
-                time="白日",
-                script="少年推门",
-                event_ids=["EV001"],
-            )
-        ],
-    )
-    shots = [
-        Shot(
-            shot_id="SH001",
-            scene_id="SC001",
-            order=1,
-            title="推门",
-            source_paragraph_ids=["P0001"],
-            source_event_ids=["EV001"],
-            character_ids=["hero"],
-            story_purpose="进入大殿",
-            action="推门",
-            shot_size="中景",
-            camera="固定",
-            start_state="门关",
-            end_state="门开",
-            video_prompt="少年在殿门外推开门，固定镜头。",
-        )
-    ]
-    return analysis, outline, shots, paragraphs
 
 
-def test_valid_storyboard() -> None:
-    assert validate_storyboard(*storyboard()) == []
+def test_valid_script_has_no_issues() -> None:
+    assert validate_script(*script()) == []
 
 
 def test_contract_forbids_extra_and_empty_required_fields() -> None:
     with pytest.raises(ValidationError):
         InputDocument(work_id="w", title="t", text=" ")
     with pytest.raises(ValidationError):
-        Analysis.model_validate({"summary": "概述", "invented": True})
+        ScriptRow(shot_size="中景", camera="固定", frame="画面", action="推门", invented=True)
     with pytest.raises(ValidationError):
-        StoryEvent(event_id="e", description="x", importance="essential")
+        ScriptRow(shot_size="大远景", camera="固定", frame="画面", action="推门")
+    with pytest.raises(ValidationError):
+        ScriptRow(shot_size="中景", camera="  ", frame="画面", action="推门")
     with pytest.raises(ValidationError):
         SourceParagraph(paragraph_id="../../bad", text="x")
+    with pytest.raises(ValidationError):
+        ScriptShot(
+            shot_id="SH001",
+            order=0,
+            shot_size="中景",
+            camera="固定",
+            frame="画面",
+            action="推门",
+        )
 
 
 def test_mutable_defaults_are_independent() -> None:
-    first = Analysis(summary="a")
-    second = Analysis(summary="b")
-    first.uncertainties.append("未知")
-    assert second.uncertainties == []
+    first = StoryScript()
+    second = StoryScript()
+    first.characters.append(ScriptCharacter(character_id="a", name="甲", appearance="黑衣"))
+    assert second.characters == []
+    assert (
+        ScriptShot(
+            shot_id="SH001", order=1, shot_size="全景", camera="固定", frame="画面", action="动作"
+        ).character_ids
+        == []
+    )
+
+
+def test_duration_bounds() -> None:
+    with pytest.raises(ValidationError):
+        ScriptRow(shot_size="中景", camera="固定", frame="画面", action="推门", duration_seconds=0)
+    with pytest.raises(ValidationError):
+        ScriptRow(
+            shot_size="中景", camera="固定", frame="画面", action="推门", duration_seconds=121
+        )
+    assert MAX_SHOT_SECONDS < 121
 
 
 def test_profile_budget() -> None:
@@ -107,40 +106,47 @@ def test_profile_budget() -> None:
 
 
 def test_missing_references_and_coverage() -> None:
-    analysis, outline, shots, paragraphs = storyboard()
-    shots[0].source_event_ids = ["missing"]
-    shots[0].character_ids = ["missing"]
-    shots[0].source_paragraph_ids = ["missing"]
-    outline.scenes[0].event_ids = []
-    issues = validate_storyboard(analysis, outline, shots, paragraphs)
-    assert any("原文引用不存在" in issue for issue in issues)
+    story, paragraphs = script()
+    shot = story.shots[0]
+    shot.character_ids = ["missing"]
+    shot.source_paragraph_ids = ["missing"]
+    issues = validate_script(story, paragraphs)
     assert any("角色引用不存在" in issue for issue in issues)
-    assert any("未被镜头覆盖" in issue for issue in issues)
-    assert any("未被大纲覆盖" in issue for issue in issues)
+    assert any("原文引用不存在" in issue for issue in issues)
+    assert any("原文段落未被写入脚本" in issue for issue in issues)
 
 
-def test_duplicate_order_and_dependency_cycle() -> None:
-    analysis, outline, shots, paragraphs = storyboard()
-    second = deepcopy(shots[0])
-    second.shot_id = "SH002"
-    second.depends_on_shot_ids = ["SH001"]
-    shots[0].depends_on_shot_ids = ["SH002"]
-    shots.append(second)
-    issues = validate_storyboard(analysis, outline, shots, paragraphs)
+def test_order_duration_and_duplicate_ids() -> None:
+    story, paragraphs = script()
+    story.shots[0].duration_seconds = 20
+    issues = validate_script(story, paragraphs)
+    assert any("超过 15 秒建议拆分" in issue for issue in issues)
+    second = deepcopy(story.shots[0])
+    second.order = 3
+    second.duration_seconds = 5
+    second.character_ids = ["hero", "hero"]
+    story.shots.append(second)
+    issues = validate_script(story, paragraphs)
+    assert any("镜头编号重复" in issue for issue in issues)
     assert any("连续递增" in issue for issue in issues)
-    assert any("循环" in issue for issue in issues)
-    assert any("必须先于" in issue for issue in issues)
-    shots.append(deepcopy(second))
-    assert any(
-        "编号重复" in issue for issue in validate_storyboard(analysis, outline, shots, paragraphs)
+    assert any("含重复角色引用" in issue for issue in issues)
+
+
+def test_duplicate_character_and_missing_appearance() -> None:
+    story, paragraphs = script()
+    story.characters.append(
+        ScriptCharacter(character_id="hero", name="少年", appearance="另一套外观")
     )
+    issues = validate_script(story, paragraphs)
+    assert any("角色编号重复" in issue for issue in issues)
+    story.characters = [
+        ScriptCharacter(character_id="hero", name="少年", appearance="x"),
+    ]
+    assert validate_script(story, paragraphs) == []
 
 
-def test_missing_evidence_and_self_dependency() -> None:
-    analysis, outline, shots, paragraphs = storyboard()
-    analysis.events[0].source_paragraph_ids = []
-    shots[0].depends_on_shot_ids = ["SH001", "unknown"]
-    issues = validate_storyboard(analysis, outline, shots, paragraphs)
-    assert any("缺少原文依据" in issue for issue in issues)
-    assert any("依赖引用不存在" in issue for issue in issues)
-    assert any("循环" in issue for issue in issues)
+def test_missing_evidence_and_empty_script() -> None:
+    story, paragraphs = script()
+    story.shots[0].source_paragraph_ids = []
+    assert any("缺少原文依据" in issue for issue in validate_script(story, paragraphs))
+    assert any("脚本没有任何分镜" in issue for issue in validate_script(StoryScript(), paragraphs))

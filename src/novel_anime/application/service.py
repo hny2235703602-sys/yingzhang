@@ -9,7 +9,14 @@ from pydantic import ValidationError
 from sqlalchemy import select, update
 
 from novel_anime.core.errors import AppError
-from novel_anime.domain.models import Character, InputDocument, ModelProfile, Shot, VisualProfile
+from novel_anime.domain.models import (
+    InputDocument,
+    ModelProfile,
+    ScriptCharacter,
+    SourceParagraph,
+    StoryScript,
+    VisualProfile,
+)
 from novel_anime.persistence.database import (
     ChapterRow,
     ConfigRow,
@@ -33,15 +40,13 @@ def digest(value: Any) -> str:
     ).hexdigest()
 
 
-STAGES = ("analysis", "outline", "shots", "review")
+STAGES = ("script",)
 
 
 def completed_stages(result: dict[str, Any]) -> list[str]:
     completed = [stage for stage in STAGES if result.get(stage)]
-    batches = result.get("shot_batches", {})
-    scenes = result.get("outline", {}).get("scenes", [])
-    if batches and (len(batches) < len(scenes) or result.get("shot_pending")):
-        completed = [stage for stage in completed if stage not in {"shots", "review"}]
+    if result.get("script_pending"):
+        completed = [stage for stage in completed if stage != "script"]
     return completed
 
 
@@ -49,8 +54,9 @@ def as_dict(row: Any) -> dict[str, Any]:
     value = {column.name: getattr(row, column.name) for column in row.__table__.columns}
     if isinstance(row, RunRow):
         result = dict(value["result"])
-        if not result.get("shots") and result.get("shot_batches"):
-            result["shots"] = [shot for batch in result["shot_batches"].values() for shot in batch]
+        script = result.get("script") or {}
+        if not result.get("shots") and script.get("shots"):
+            result["shots"] = script["shots"]
         value["result"] = result
     return value
 
@@ -158,43 +164,57 @@ class StudioService:
     def chapter_overview(self, chapter_id: str) -> dict[str, Any]:
         chapter = self.get_chapter(chapter_id)
         runs = self.list_runs(chapter_id)
-        run = next((item for item in runs if item.get("result", {}).get("shots")), None)
+        # Only story-script runs carry the shot fields the drawing workbench needs.
+        run = next(
+            (
+                item
+                for item in runs
+                if item.get("result", {}).get("script") and item["result"].get("shots")
+            ),
+            None,
+        )
         if run is None:
             return {"shots": [], "run": None}
         profiles = {p["character_id"]: p for p in self.list_visual_profiles(chapter["work_id"])}
         assets = self.list_character_images(chapter["work_id"])
         characters = {
-            p["character_id"]: p for p in run["result"].get("analysis", {}).get("characters", [])
+            p["character_id"]: p for p in run["result"].get("script", {}).get("characters", [])
         }
         snapshots = {p["character_id"]: p for p in run["document"].get("visual_profiles", [])}
         shots = []
         for shot in sorted(run["result"]["shots"], key=lambda item: item["order"]):
-            references = []
-            subjects = []
-            appearance_prompts = {
-                p["character_id"]: p["prompt"] for p in shot.get("character_prompts", [])
-            }
+            references: list[dict[str, Any]] = []
+            subjects: list[dict[str, Any]] = []
             for character_id in dict.fromkeys(shot.get("character_ids", [])):
                 profile = profiles.get(character_id, {})
                 character = characters.get(character_id, {})
                 snapshot = snapshots.get(character_id, {})
+                description = "；".join(
+                    part
+                    for part in (
+                        character.get("appearance") or profile.get("appearance", ""),
+                        character.get("costume") or profile.get("costume", ""),
+                    )
+                    if part
+                )
+                adopted = set(profile.get("reference_assets", []))
+                images = [
+                    {"asset_id": asset["asset_id"]}
+                    for asset in assets
+                    if asset["character_id"] == character_id
+                    and asset["asset_id"] in adopted
+                    and asset["purpose"] != "candidate"
+                ]
                 subjects.append(
                     {
                         "character_id": character_id,
                         "name": character.get("name")
                         or snapshot.get("name")
                         or profile.get("name", character_id),
-                        "description": appearance_prompts.get(character_id, ""),
-                        "images": [
-                            {"asset_id": asset["asset_id"]}
-                            for asset in assets
-                            if asset["character_id"] == character_id
-                            and asset["asset_id"] in set(profile.get("reference_assets", []))
-                            and asset["purpose"] != "candidate"
-                        ],
+                        "description": description,
+                        "images": images,
                     }
                 )
-                adopted = set(profile.get("reference_assets", []))
                 references.extend(
                     {
                         "asset_id": asset["asset_id"],
@@ -219,62 +239,105 @@ class StudioService:
             "run": {key: run[key] for key in ("id", "status", "updated_at")},
         }
 
+    def video_plan(self, chapter_id: str) -> dict[str, Any]:
+        """Compile the newest script into video prompt groups; never re-runs the text stage."""
+        from novel_anime.domain.video import VIDEO_MAX_SECONDS, VIDEO_TARGET_SECONDS, compile_plan
+
+        self.get_chapter(chapter_id)
+        run = next(
+            (
+                item
+                for item in self.list_runs(chapter_id)
+                if item.get("result", {}).get("script") and item["result"].get("shots")
+            ),
+            None,
+        )
+        config = self.load_video_config()
+        aspect_ratio = str(config.get("aspect_ratio") or "16:9")
+        target = float(config.get("target_seconds") or VIDEO_TARGET_SECONDS)
+        ceiling = float(config.get("max_seconds") or VIDEO_MAX_SECONDS)
+        if run is None:
+            return {
+                "groups": [],
+                "run": None,
+                "preset": None,
+                "negative": "",
+                "target_seconds": target,
+                "max_seconds": ceiling,
+                "aspect_ratio": aspect_ratio,
+            }
+        result = run["result"]
+        plan = compile_plan(
+            result.get("shots", []),
+            result.get("script", {}).get("characters", []),
+            self.video_prompt(),
+            {"aspect_ratio": aspect_ratio, "target_seconds": target, "max_seconds": ceiling},
+        )
+        shots = {str(shot["shot_id"]): shot for shot in result.get("shots", [])}
+        for group in plan["groups"]:
+            for item in group["passes"]:
+                first = shots.get(item["shot_ids"][0], {}) if item["shot_ids"] else {}
+                item["first_shot"] = {
+                    "shot_id": first.get("shot_id", ""),
+                    "frame": first.get("frame", ""),
+                    "shot_size": first.get("shot_size", ""),
+                }
+        return {
+            **plan,
+            "run": {key: run[key] for key in ("id", "status", "updated_at", "revision")},
+            "target_seconds": target,
+            "max_seconds": ceiling,
+            "aspect_ratio": aspect_ratio,
+        }
+
     def shot_image_source(self, run_id: str, shot_id: str) -> dict[str, Any]:
+        """Image prompts read only script rows, so drawing never re-runs the text stage."""
         run = self.get_run(run_id)
         image_run_id = run["document"].get("shot_image_run_id", run_id)
         result = run["result"]
         shot = next((s for s in result.get("shots", []) if s["shot_id"] == shot_id), None)
         if shot is None:
             raise AppError("not_found", "分镜不存在，请重新选择。")
-        character_ids = set(shot.get("character_ids", []))
-        profiles = [
-            p
-            for p in run["document"].get("visual_profiles", [])
-            if p["character_id"] in character_ids
-        ]
-        scene = next(
-            (
-                s
-                for s in result.get("outline", {}).get("scenes", [])
-                if s["scene_id"] == shot.get("scene_id")
-            ),
-            {},
-        )
-        individual = {
-            item["character_id"]: item["prompt"]
-            for prior in sorted(result.get("shots", []), key=lambda value: value["order"])
-            if prior["order"] <= shot["order"]
-            for item in prior.get("character_prompts", [])
-            if item.get("prompt")
+        character_ids = list(dict.fromkeys(shot.get("character_ids", [])))
+        people = {
+            p["character_id"]: p
+            for p in result.get("script", {}).get("characters", [])
+            if p.get("character_id") in set(character_ids)
         }
-        character_text = (
-            "\n".join(individual[cid] for cid in shot.get("character_ids", []) if cid in individual)
-            or shot.get("character_prompt")
-            or "\n".join(
-                f"{p['name']}：外貌 {p.get('appearance', '未知')}；服装 {p.get('costume', '未知')}"
-                for p in profiles
+        profiles = {
+            p["character_id"]: p
+            for p in run["document"].get("visual_profiles", [])
+            if p["character_id"] in set(character_ids)
+        }
+        subjects = []
+        for cid in character_ids:
+            person = people.get(cid, {})
+            profile = profiles.get(cid, {})
+            prompt = "；".join(
+                part
+                for part in (
+                    person.get("appearance") or profile.get("appearance", ""),
+                    person.get("costume") or profile.get("costume", ""),
+                )
+                if part
             )
-            or ("无人物" if not character_ids else "本版分镜未记录人物外观，请重新生成分镜。")
-        )
-        environment = (
-            shot.get("environment_prompt")
-            or "\n".join(str(scene.get(key, "")) for key in ("location", "time") if scene.get(key))
-            or "本版分镜未记录环境描述，请先在分镜拆解中补充。"
-        )
+            subjects.append(
+                {
+                    "character_id": cid,
+                    "name": person.get("name") or profile.get("name", cid),
+                    "prompt": prompt,
+                }
+            )
+        character_text = "\n".join(
+            f"{item['name']}：{item['prompt']}" for item in subjects if item["prompt"]
+        ) or ("无人物" if not character_ids else "本版脚本未记录人物外观，请重新生成脚本。")
+        environment = shot.get("setting") or "本版脚本未记录场景，请先补充场景描述。"
         content = {
             "character_prompt": character_text,
             "environment_prompt": environment,
             "shot_prompt": "\n".join(
                 str(shot.get(key, ""))
-                for key in (
-                    "title",
-                    "shot_size",
-                    "camera",
-                    "composition",
-                    "action",
-                    "start_state",
-                    "end_state",
-                )
+                for key in ("shot_size", "camera", "frame", "action")
                 if shot.get(key)
             ),
         }
@@ -292,23 +355,12 @@ class StudioService:
                     .order_by(ShotImageRow.created_at.desc())
                 )
             ]
-        names = {
-            p["character_id"]: p["name"] for p in result.get("analysis", {}).get("characters", [])
+        return {
+            **content,
+            "subjects": subjects,
+            "source_hash": source_hash,
+            "images": images,
         }
-        profile_by_id = {p["character_id"]: p for p in profiles}
-        subjects = []
-        for cid in shot.get("character_ids", []):
-            profile = profile_by_id.get(cid, {})
-            subjects.append(
-                {
-                    "character_id": cid,
-                    "name": names.get(cid) or profile.get("name", cid),
-                    "prompt": individual.get(cid)
-                    or "；".join(filter(None, [profile.get("appearance"), profile.get("costume")]))
-                    or (shot.get("character_prompt", "") if len(character_ids) == 1 else ""),
-                }
-            )
-        return {**content, "subjects": subjects, "source_hash": source_hash, "images": images}
 
     def save_shot_images(
         self, run_id: str, shot_id: str, source_hash: str, images: list[dict[str, Any]]
@@ -365,15 +417,8 @@ class StudioService:
         source_revision: int | None = None,
         selected_stages: list[str] | None = None,
     ) -> str:
-        if selected_stages is not None:
-            if not isinstance(selected_stages, list) or not selected_stages:
-                raise AppError("invalid_input", "请选择要执行的相邻步骤。")
-            if any(stage not in STAGES for stage in selected_stages):
-                raise AppError("invalid_input", "执行阶段无效。")
-            first = STAGES.index(selected_stages[0])
-            if list(STAGES[first : first + len(selected_stages)]) != selected_stages:
-                raise AppError("invalid_input", "只能合并连续相邻的步骤。")
-            target_stage = selected_stages[0]
+        if target_stage not in (None, "script") or selected_stages not in (None, ["script"]):
+            raise AppError("invalid_input", "故事脚本只有一步，请直接生成脚本。")
         chapter = self.get_chapter(chapter_id)
         document = InputDocument(
             work_id=chapter["work_id"],
@@ -391,22 +436,21 @@ class StudioService:
 
         saved_templates = self._load_config("prompt_templates")
         document["prompt_templates"] = {
-            stage: saved_templates.get(stage)
-            or (ROOT / "prompts" / f"{stage}.txt").read_text(encoding="utf-8")
-            for stage in ("analysis", "outline", "shots", "review")
+            "script": saved_templates.get("script")
+            or (ROOT / "prompts" / "script.txt").read_text(encoding="utf-8")
         }
         initial: dict[str, Any] = {}
-        if target_stage is not None:
-            if target_stage not in STAGES:
-                raise AppError("invalid_input", "请选择分析、大纲、分镜或复核。")
-            document["target_stage"] = target_stage
-            if selected_stages is not None:
-                document["selected_stages"] = selected_stages
-            document["chapter_revision"] = chapter["revision"]
-            document["source_run_id"] = source_run_id
-            document["source_revision"] = source_revision
+        document["target_stage"] = "script"
+        document["selected_stages"] = ["script"]
+        document["chapter_revision"] = chapter["revision"]
+        document["source_run_id"] = source_run_id
+        document["source_revision"] = source_revision
+        if source_run_id is not None:
+            document["shot_image_run_id"] = self.get_run(source_run_id)["document"].get(
+                "shot_image_run_id", source_run_id
+            )
         config = ModelProfile(**profile).model_dump()
-        input_hash = digest({"document": document, "profile": config, "template": "1.0"})
+        input_hash = digest({"document": document, "profile": config, "template": "2.0"})
         with self.sessions.begin() as session:
             existing = session.scalar(
                 select(RunRow).where(RunRow.idempotency_key == idempotency_key)
@@ -415,71 +459,22 @@ class StudioService:
                 if existing.input_hash != input_hash:
                     raise AppError("idempotency_conflict", "提交标识与输入不一致，请重新提交。")
                 return str(existing.id)
-            if target_stage is not None:
-                active = session.scalar(
-                    select(RunRow).where(
-                        RunRow.chapter_id == chapter_id,
-                        RunRow.status.in_(
-                            ["pending", "running", "pause_requested", "stop_requested"]
-                        ),
-                    )
+            active = session.scalar(
+                select(RunRow).where(
+                    RunRow.chapter_id == chapter_id,
+                    RunRow.status.in_(["pending", "running", "pause_requested", "stop_requested"]),
                 )
-                if active:
-                    raise AppError("invalid_state", "本章已有执行中的步骤，请完成或暂停后再操作。")
-                source = session.get(RunRow, source_run_id) if source_run_id else None
-                latest = session.scalar(
-                    select(RunRow)
-                    .where(RunRow.chapter_id == chapter_id)
-                    .order_by(RunRow.updated_at.desc())
-                    .limit(1)
-                )
-                if source_run_id and (
+            )
+            if active:
+                raise AppError("invalid_state", "本章已有执行中的脚本任务，请完成或暂停后再操作。")
+            if source_run_id is not None:
+                source = session.get(RunRow, source_run_id)
+                if (
                     not source
                     or source.chapter_id != chapter_id
                     or source.revision != source_revision
-                    or source != latest
                 ):
-                    raise AppError("version_conflict", "执行依据已更新，请刷新后选择当前版本。")
-                index = STAGES.index(target_stage)
-                if index:
-                    if (
-                        not source
-                        or source.owner
-                        or source.status in {"running", "pending", "pause_requested"}
-                    ):
-                        raise AppError("invalid_state", "请先完成并确认上一阶段。")
-                    if any(
-                        source.document.get(key, "") != chapter[key]
-                        for key in ("text", "context", "title")
-                    ):
-                        raise AppError("version_conflict", "章节已更新，请重新分析；旧结果仍保留。")
-                    approved = source.result.get("confirmed_stages", {})
-                    for prior in STAGES[:index]:
-                        if prior not in completed_stages(source.result) or approved.get(
-                            prior
-                        ) != digest(source.result[prior]):
-                            raise AppError(
-                                "invalid_state", "请先确认此前阶段的结果，再进入下一步。"
-                            )
-                    keep = {
-                        "paragraphs",
-                        "schema_version",
-                        "prompt_template_version",
-                        "generation_status",
-                    }
-                    keep.update(STAGES[:index])
-                    if index > 2:
-                        keep.add("shot_batches")
-                        document["shot_image_run_id"] = source.document.get(
-                            "shot_image_run_id", source.id
-                        )
-                    initial = {key: value for key, value in source.result.items() if key in keep}
-                    initial["confirmed_stages"] = {key: approved[key] for key in STAGES[:index]}
-                    initial["provenance"] = [
-                        item
-                        for item in source.result.get("provenance", [])
-                        if item.get("stage") in STAGES[:index]
-                    ]
+                    raise AppError("version_conflict", "编辑依据已更新，请刷新后重新提交。")
             run_id = uid()
             session.add(
                 RunRow(
@@ -496,6 +491,7 @@ class StudioService:
         return run_id
 
     def confirm_stage(self, run_id: str, stage: str, revision: int) -> None:
+        """Mark the reviewed script as confirmed; the next edit clears the mark."""
         if stage not in STAGES:
             raise AppError("invalid_input", "阶段无效。")
         with self.sessions.begin() as session:
@@ -523,7 +519,7 @@ class StudioService:
                 or row.status in {"pending", "running", "pause_requested"}
                 or stage not in completed_stages(row.result)
             ):
-                raise AppError("invalid_state", "该阶段尚未完成，不能确认。")
+                raise AppError("invalid_state", "脚本尚未生成，不能确认。")
             result = dict(row.result)
             result["confirmed_stages"] = {
                 **result.get("confirmed_stages", {}),
@@ -534,15 +530,12 @@ class StudioService:
             row.updated_at = now()
 
     def edit_stage(self, run_id: str, stage: str, revision: int, value: dict[str, Any]) -> str:
-        from novel_anime.domain.models import Analysis, Outline
-
-        schemas = {"analysis": Analysis, "outline": Outline}
-        if stage not in schemas:
-            raise AppError("invalid_input", "仅支持在此编辑分析或大纲。")
+        if stage != "script":
+            raise AppError("invalid_input", "仅支持在此编辑故事脚本。")
         try:
-            parsed = schemas[stage](**value).model_dump()
+            parsed = StoryScript(**value).model_dump()
         except (ValidationError, TypeError):
-            raise AppError("invalid_input", "编辑内容不符合本阶段的数据格式。") from None
+            raise AppError("invalid_input", "编辑内容不符合故事脚本的数据格式。") from None
         with self.sessions.begin() as session:
             source = session.get(RunRow, run_id)
             if not source or source.revision != revision:
@@ -563,48 +556,25 @@ class StudioService:
                 )
             ):
                 raise AppError("version_conflict", "依据已更新，历史结果不能覆盖当前版本。")
-            if (
-                source.owner
-                or source.status in {"pending", "running", "pause_requested"}
-                or stage not in completed_stages(source.result)
-            ):
+            if source.owner or source.status in {"pending", "running", "pause_requested"}:
                 raise AppError("invalid_state", "请等待当前步骤完成后再编辑。")
-            known_paragraphs = {p["paragraph_id"] for p in source.result.get("paragraphs", [])}
-            if stage == "analysis":
-                if any(
-                    not set(item.get("source_paragraph_ids", [])).issubset(known_paragraphs)
-                    for key in ("characters", "events")
-                    for item in parsed[key]
-                ):
-                    raise AppError("invalid_input", "分析引用了不存在的原文段落。")
-            elif not parsed["scenes"] or any(
-                not set(scene["event_ids"]).issubset(
-                    {event["event_id"] for event in source.result["analysis"]["events"]}
-                )
-                for scene in parsed["scenes"]
-            ):
-                raise AppError("invalid_input", "大纲需要场景，且只能引用已分析的事件。")
-            keep = {
-                "paragraphs",
-                "schema_version",
-                "prompt_template_version",
-                "generation_status",
-                *STAGES[: STAGES.index(stage)],
-            }
-            result = {key: val for key, val in source.result.items() if key in keep}
-            result[stage] = parsed
-            result["confirmed_stages"] = {
+            if stage not in completed_stages(source.result):
+                raise AppError("invalid_state", "脚本尚未生成，不能编辑。")
+            result = {
                 key: val
-                for key, val in source.result.get("confirmed_stages", {}).items()
-                if key in STAGES[: STAGES.index(stage)]
+                for key, val in source.result.items()
+                if key in {"paragraphs", "schema_version", "prompt_template_version"}
             }
+            result["script"] = parsed
+            result["shots"] = parsed["shots"]
             result["provenance"] = source.result.get("provenance", [])
             result["manual_edit"] = True
+            result["validation_issues"] = self._script_issues(result, parsed)
             ident = uid()
             document = {
                 **source.document,
-                "target_stage": stage,
-                "selected_stages": [stage],
+                "target_stage": "script",
+                "selected_stages": ["script"],
                 "source_run_id": run_id,
                 "source_revision": revision,
             }
@@ -617,33 +587,34 @@ class StudioService:
                     document=document,
                     profile=source.profile,
                     result=result,
-                    status="stage_complete",
-                    stage=stage,
-                    validation_issues=[],
+                    status="review_required" if result["validation_issues"] else "succeeded",
+                    stage="script",
+                    validation_issues=result["validation_issues"],
                 )
             )
             return ident
 
-    def save_run_shots(
-        self, run_id: str, shots: list[dict[str, Any]], expected_revision: int
-    ) -> None:
-        from novel_anime.domain.models import Analysis, Outline, SourceParagraph
-        from novel_anime.domain.validation import validate_storyboard
-
-        parsed = [Shot(**shot) for shot in shots]
+    def save_run_script(self, run_id: str, script: dict[str, Any], expected_revision: int) -> None:
+        """Store an edited story script as a new result revision after a full recheck."""
+        try:
+            parsed = StoryScript(**script).model_dump()
+        except (ValidationError, TypeError):
+            raise AppError(
+                "invalid_input", "脚本行格式不正确，请检查景别、时长必填与空值。"
+            ) from None
         with self.sessions.begin() as session:
             row = session.get(RunRow, run_id)
             if not row or row.revision != expected_revision:
-                raise AppError("version_conflict", "分镜已更新，请刷新后再保存。")
+                raise AppError("version_conflict", "脚本已更新，请刷新后再保存。")
             if row.status not in ("succeeded", "review_required"):
                 raise AppError("invalid_state", "任务尚未完成，请稍后编辑。")
+            chapter = session.get(ChapterRow, row.chapter_id)
+            if not chapter or any(
+                row.document.get(key, "") != getattr(chapter, key)
+                for key in ("text", "context", "title")
+            ):
+                raise AppError("version_conflict", "章节已更新，请重新生成脚本后再修改。")
             result = dict(row.result)
-            issues = validate_storyboard(
-                Analysis(**result["analysis"]),
-                Outline(**result["outline"]),
-                parsed,
-                [SourceParagraph(**p) for p in result["paragraphs"]],
-            )
             session.add(
                 ResultVersionRow(
                     id=uid(),
@@ -652,13 +623,26 @@ class StudioService:
                     result=json.loads(json.dumps(result)),
                 )
             )
-            result["shots"] = [shot.model_dump() for shot in parsed]
+            issues = self._script_issues(result, parsed)
+            result["script"] = parsed
+            result["shots"] = parsed["shots"]
             result["manual_edit"] = True
             row.result = result
-            row.validation_issues = issues + ["手工修改后需要复核连续性与剧情表达。"]
+            row.validation_issues = issues + ["手工修改后需要复核画面连贯与台词还原。"]
             row.status = "review_required"
             row.revision += 1
             row.updated_at = now()
+
+    @staticmethod
+    def _script_issues(result: dict[str, Any], script: dict[str, Any]) -> list[str]:
+        from novel_anime.domain.validation import validate_script
+
+        try:
+            parsed = StoryScript(**script)
+            paragraphs = [SourceParagraph(**item) for item in result.get("paragraphs", [])]
+        except (ValidationError, TypeError):
+            return ["脚本无法通过结构校验，请检查镜头编号、时长与必填内容。"]
+        return validate_script(parsed, paragraphs)
 
     def load_profiles(self) -> dict[str, Any]:
         return self._load_config("profiles")
@@ -681,25 +665,42 @@ class StudioService:
     def load_video_config(self) -> dict[str, Any]:
         return self._load_config("video")
 
+    def video_prompt(self) -> str:
+        """The saved video template, falling back to the shipped Wan2.2 提示词. It only
+        supplies style and limits;每镜的画面与动作仍来自脚本。"""
+        from novel_anime.core.settings import ROOT
+
+        return self._load_config("media_prompt_templates").get("video") or (
+            ROOT / "prompts" / "video.txt"
+        ).read_text(encoding="utf-8")
+
     def save_video_config(self, config: dict[str, Any]) -> None:
-        allowed = {"base_url", "workflow", "aspect_ratio", "comfy", "ratio", "workflow_note"}
+        allowed = {
+            "base_url",
+            "workflow",
+            "aspect_ratio",
+            "comfy",
+            "ratio",
+            "workflow_note",
+            "preset",
+            "target_seconds",
+            "max_seconds",
+        }
         self._save_config("video", {k: v for k, v in config.items() if k in allowed})
 
     def character_suggestions(self, work_id: str) -> list[dict[str, Any]]:
-        """Characters named by the latest analysis and not yet saved as visual profiles."""
+        """Characters listed by the newest script and not yet saved as visual profiles."""
         confirmed = {item["character_id"] for item in self.list_visual_profiles(work_id)}
         suggestions: list[dict[str, Any]] = []
         seen: set[str] = set()
         for chapter in self.list_chapters(work_id):
             for run in self.list_runs(chapter["id"]):
-                characters = ((run.get("result") or {}).get("analysis") or {}).get(
-                    "characters"
-                ) or []
+                characters = ((run.get("result") or {}).get("script") or {}).get("characters") or []
                 if not characters:
                     continue
                 for character in characters:
                     try:
-                        parsed = Character.model_validate(character)
+                        parsed = ScriptCharacter.model_validate(character)
                     except ValidationError:
                         continue
                     if parsed.character_id in confirmed or parsed.character_id in seen:
@@ -709,8 +710,8 @@ class StudioService:
                         {
                             "character_id": parsed.character_id,
                             "name": parsed.name,
-                            "appearance": parsed.description,
-                            "costume": "本章分析未分开描述服装",
+                            "appearance": parsed.appearance,
+                            "costume": parsed.costume,
                             "source": chapter["title"],
                         }
                     )
@@ -959,6 +960,5 @@ class StudioService:
                 for key in ("text", "context", "title")
             )
         ):
-            raise AppError("version_conflict", "上游已更新，请从当前版本执行下一步。")
-        stage = row.document.get("target_stage") or row.stage.split()[0]
-        row.document = {**row.document, "target_stage": stage if stage in STAGES else "analysis"}
+            raise AppError("version_conflict", "章节已更新，请从当前版本重新生成脚本。")
+        row.document = {**row.document, "target_stage": "script", "selected_stages": ["script"]}

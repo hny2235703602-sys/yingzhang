@@ -234,6 +234,9 @@ class LLMClient:
                         }
                 if self.profile.temperature is not None:
                     kwargs["temperature"] = self.profile.temperature
+                if self.profile.reasoning_effort and self.profile.protocol == "chat_completions":
+                    # 仅对 chat_completions 显式下发；Responses 协议的该字段语义不同。
+                    kwargs["reasoning_effort"] = self.profile.reasoning_effort
                 return endpoint(**kwargs)
             except APITimeoutError:
                 raise AppError(

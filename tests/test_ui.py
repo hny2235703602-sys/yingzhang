@@ -25,7 +25,7 @@ def assert_clean(app: AppTest) -> None:
     assert not app.error, [error.value for error in app.error]
 
 
-def test_persistent_chapter_and_six_pages(ui_service: StudioService) -> None:
+def test_persistent_chapter_and_four_pages(ui_service: StudioService) -> None:
     app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=20).run()
     assert_clean(app)
     app.text_input[0].set_value("UI验证作品")
@@ -38,7 +38,7 @@ def test_persistent_chapter_and_six_pages(ui_service: StudioService) -> None:
     work = ui_service.list_works()[0]
     chapter = ui_service.list_chapters(work["id"])[0]
     assert ui_service.get_chapter(chapter["id"])["text"] == "少年走进庭院。"
-    for page in ["改编大纲", "分镜工作台", "本章分析与角色资料", "文本任务"]:
+    for page in ["故事脚本", "视频提示词", "角色资料", "文本任务"]:
         app.radio[0].set_value(page).run()
         assert_clean(app)
     assert "模型与工作流" not in app.radio[0].options
@@ -72,7 +72,7 @@ def test_submit_and_pause_use_real_service_without_worker(ui_service: StudioServ
     )
     app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=20).run()
     app.selectbox(key=f"chapter_choice_{work}").set_value(chapter).run()
-    next(button for button in app.button if button.label == "开始文本改编").click().run()
+    next(button for button in app.button if button.label == "开始生成故事脚本").click().run()
     assert_clean(app)
     runs = ui_service.list_runs(chapter)
     assert len(runs) == 1
@@ -84,6 +84,68 @@ def test_submit_and_pause_use_real_service_without_worker(ui_service: StudioServ
     next(button for button in app.button if button.label == "暂停").click().run()
     assert_clean(app)
     assert ui_service.list_runs(chapter)[0]["status"] == "paused"
+
+
+def test_video_page_compiles_prompt_groups(ui_service: StudioService) -> None:
+    from novel_anime.domain.models import ModelProfile
+    from novel_anime.persistence.database import RunRow
+
+    work = ui_service.create_work("视频测试")
+    chapter = ui_service.save_chapter(work, "第一章", "少年走进山谷。", "")
+    profile = ModelProfile(
+        provider="test",
+        protocol="chat_completions",
+        base_url="https://example.com/v1",
+        model="test",
+    ).model_dump()
+    run_id = ui_service.create_run(chapter, profile, "二维动画", "16:9", "", "ui-video")
+    shots = [
+        {
+            "shot_id": f"SH00{index}",
+            "order": index,
+            "duration_seconds": seconds,
+            "shot_size": "中景",
+            "camera": "固定",
+            "frame": "少年走过石阶",
+            "action": "少年向前走",
+            "dialogue": "",
+            "character_ids": ["hero"],
+            "setting": "山谷石阶",
+            "source_paragraph_ids": ["P0001"],
+            "generation_status": "not_submitted",
+        }
+        for index, seconds in ((1, 13.0), (2, 6.0))
+    ]
+    with ui_service.sessions.begin() as session:
+        row = session.get(RunRow, run_id)
+        row.result = {
+            "script": {
+                "characters": [
+                    {
+                        "character_id": "hero",
+                        "name": "少年",
+                        "appearance": "黑发少年",
+                        "costume": "青色长衫",
+                    }
+                ],
+                "shots": shots,
+            },
+            "shots": shots,
+            "paragraphs": [{"paragraph_id": "P0001", "text": "少年走进山谷。"}],
+        }
+        row.status = "succeeded"
+    app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=20).run()
+    app.selectbox(key=f"chapter_choice_{work}").set_value(chapter).run()
+    app.radio[0].set_value("视频提示词").run()
+    assert_clean(app)
+    headings = [item.value for item in app.subheader]
+    assert any("G001 · 19 秒" in value for value in headings), headings
+    assert any("Wan2.2 TI2V-5B" in value for value in headings), headings
+    prompts = [field.value for field in app.text_area]
+    assert any("山谷石阶" in value and "紧接着" in value for value in prompts), prompts
+    assert any("接上一段最后一帧继续" in item.value for item in app.code), [
+        item.value for item in app.code
+    ]
 
 
 def test_fetch_and_select_model(ui_service: StudioService, monkeypatch: pytest.MonkeyPatch) -> None:

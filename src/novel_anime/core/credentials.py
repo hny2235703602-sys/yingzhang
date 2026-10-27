@@ -1,4 +1,5 @@
 """Private file credentials shared by the web process and text worker."""
+
 import json
 import os
 import tempfile

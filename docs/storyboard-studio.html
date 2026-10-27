@@ -308,9 +308,8 @@ body {
     <header class="topbar"><button type="button" class="back hidden" id="back-novels" aria-label="返回小说封面">←</button><h1 id="page-title">首页</h1></header>
     <nav class="subnav hidden" id="text-tabs" aria-label="文生文页面">
       <button type="button" class="active" data-text="source">章节原文</button>
-      <button type="button" data-text="outline">改编大纲</button>
-      <button type="button" data-text="shots">分镜工作台</button>
-      <button type="button" data-text="analysis">本章分析与角色资料</button>
+      <button type="button" data-text="script">故事脚本</button>
+      <button type="button" data-text="cast">角色资料</button>
       <button type="button" data-text="tasks">文本任务</button>
     </nav>
     <p class="page-note hidden" id="page-note">服务代开发，暂不可用</p>
@@ -339,7 +338,7 @@ body {
         </div>
         <div class="cast">
           <h3>人物形象</h3>
-          <p>不在这里手写。分析章节后，由 AI 按章节逐步填写。</p>
+          <p>不在这里手写。上传章节生成脚本后，由 AI 逐章补全。</p>
           <table>
             <thead><tr><th>角色</th><th>外貌</th><th>服装</th><th>来源章节</th></tr></thead>
             <tbody id="cast-body"></tbody>
@@ -352,9 +351,8 @@ body {
     </div>
     <div id="text-pages" class="hidden">
       <section data-text-page="source"></section>
-      <section data-text-page="outline" class="hidden"></section>
-      <section data-text-page="shots" class="hidden"></section>
-      <section data-text-page="analysis" class="hidden"></section>
+      <section data-text-page="script" class="hidden"></section>
+      <section data-text-page="cast" class="hidden"></section>
       <section data-text-page="tasks" class="hidden"></section>
     </div>
   </main>

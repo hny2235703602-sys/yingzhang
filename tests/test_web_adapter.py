@@ -1,4 +1,5 @@
 import base64
+import os
 import struct
 import zlib
 from pathlib import Path
@@ -29,7 +30,7 @@ def test_prompt_categories_save_independently(service):
         service, "prompts", {"category": "image", "template": "角色：{name}，外貌：{appearance}"}
     )
     dispatch(service, "prompts", {"category": "video", "template": "保持角色连续性"})
-    text = {stage: "文本提示词 " + stage for stage in ("analysis", "outline", "shots", "review")}
+    text = {"script": "按「时长、分镜、动作、台词」写故事脚本。"}
     dispatch(service, "prompts", {"category": "text", **text})
     state = snapshot(StudioService())
     assert state["templates"] == text
@@ -39,7 +40,53 @@ def test_prompt_categories_save_independently(service):
     }
     with pytest.raises(AppError):
         dispatch(service, "prompts", {"category": "image", "template": " "})
+    with pytest.raises(AppError):
+        dispatch(service, "prompts", {"category": "text", "script": " "})
+    with pytest.raises(AppError):
+        dispatch(service, "prompts", {"category": "text", "analysis": "旧提示词"})
     assert snapshot(service)["media_templates"] == state["media_templates"]
+    assert snapshot(service)["templates"] == text
+
+
+def test_missing_shipped_prompt_never_breaks_the_workspace(service, monkeypatch, tmp_path):
+    from novel_anime.core import settings
+    from novel_anime.ui import web_server
+
+    monkeypatch.setattr(settings, "ROOT", tmp_path)
+    state = web_server.snapshot(service)
+    assert state["templates"] == {"script": ""}
+    assert state["media_templates"] == {"image": "", "video": ""}
+    assert web_server.snapshot_image_prompt(service) == ""
+
+
+def test_http_layer_answers_state_and_reports_unknown_chapter(service):
+    import json
+    import threading
+    from http.server import ThreadingHTTPServer
+    from urllib.error import HTTPError
+    from urllib.request import urlopen
+
+    from novel_anime.ui.web_server import Handler
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        with urlopen(f"{base}/api/state", timeout=10) as response:
+            assert response.status == 200
+            assert json.loads(response.read())["novels"] == []
+        with pytest.raises(HTTPError) as caught:
+            urlopen(f"{base}/api/overview/missing", timeout=10)
+        assert caught.value.code == 404
+        assert json.loads(caught.value.read()) == {
+            "error": "未找到章节。",
+            "code": "not_found",
+        }
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=10)
 
 
 def test_overview_shows_chapter_shots_and_only_adopted_character_references(service):
@@ -79,18 +126,48 @@ def test_overview_shows_chapter_shots_and_only_adopted_character_references(serv
         model="test",
     ).model_dump()
     run = service.create_run(chapter, profile, "二维动画", "16:9", "", "overview-old")
+    shots = [
+        {
+            "shot_id": "s2",
+            "order": 2,
+            "duration_seconds": 4.0,
+            "shot_size": "远景",
+            "camera": "固定",
+            "frame": "庭院空镜",
+            "action": "无人",
+            "character_ids": [],
+            "setting": "庭院",
+            "source_paragraph_ids": ["P0001"],
+        },
+        {
+            "shot_id": "s1",
+            "order": 1,
+            "duration_seconds": 5.0,
+            "shot_size": "近景",
+            "camera": "缓慢推进",
+            "frame": "少年推门",
+            "action": "少年推门",
+            "character_ids": ["hero"],
+            "setting": "门边",
+            "source_paragraph_ids": ["P0001"],
+        },
+    ]
     with service.sessions.begin() as session:
         row = session.get(RunRow, run)
         row.result = {
-            "shots": [
-                {"shot_id": "s2", "order": 2, "character_ids": []},
-                {
-                    "shot_id": "s1",
-                    "order": 1,
-                    "character_ids": ["hero"],
-                    "character_prompts": [{"character_id": "hero", "prompt": "黑色长发，蓝色长袍"}],
-                },
-            ]
+            "script": {
+                "characters": [
+                    {
+                        "character_id": "hero",
+                        "name": "少年",
+                        "appearance": "黑色长发",
+                        "costume": "蓝色长袍",
+                    }
+                ],
+                "shots": shots,
+            },
+            "shots": shots,
+            "paragraphs": [{"paragraph_id": "P0001", "text": "少年推门。"}],
         }
         row.status = "review_required"
     service.create_run(chapter, profile, "二维动画", "16:9", "", "overview-pending")
@@ -102,8 +179,8 @@ def test_overview_shows_chapter_shots_and_only_adopted_character_references(serv
     ]
     assert result["shots"][1]["reference_images"] == []
     assert result["shots"][0]["subjects"][0]["name"] == "少年"
-    assert result["shots"][0]["subjects"][0]["description"] == "黑色长发，蓝色长袍"
-    assert result["shots"][0]["image_source"]["character_prompt"] == "黑色长发，蓝色长袍"
+    assert result["shots"][0]["subjects"][0]["description"] == "黑色长发；蓝色长袍"
+    assert result["shots"][0]["image_source"]["character_prompt"] == "少年：黑色长发；蓝色长袍"
     assert result["shots"][0]["subjects"][0]["images"] == [{"asset_id": adopted}]
     assert result["shots"][1]["subjects"] == []
     assert service.chapter_overview(other) == {"shots": [], "run": None}
@@ -172,7 +249,8 @@ def test_simple_profile_secret_keep_clear_and_disabled(monkeypatch, tmp_path):
     assert service.load_profiles()["online"]["context_budget"] == 0
     env = service.load_profiles()["online"]["api_key_env"]
     assert resolve_key(env) == "test-private-value"
-    assert credential_path().stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":  # Windows has no POSIX mode bits; production runs Linux.
+        assert credential_path().stat().st_mode & 0o777 == 0o600
     assert "test-private-value" not in json.dumps(snapshot(service))
     assert snapshot(service)["profiles"][0]["key_configured"] is True
     assert snapshot(service)["profiles"][0]["key_tail"] == "alue"
@@ -359,32 +437,34 @@ def shot_studio(service):
     run_id = service.create_run(chapter, profile, "二维动画", "16:9", "", "shot-studio")
     shot = {
         "shot_id": "s1",
-        "scene_id": "scene1",
         "order": 1,
-        "title": "庭院少年",
-        "character_ids": ["hero"],
-        "character_prompt": "黑发少年，蓝色长袍",
-        "environment_prompt": "清晨庭院，石板路，竹影",
-        "composition": "人物在画面左侧",
+        "duration_seconds": 5.0,
+        "shot_size": "中景",
+        "camera": "缓慢推进",
+        "frame": "人物在画面左侧，少年抬头",
         "action": "少年抬头",
+        "dialogue": "少年：“有人吗？”",
+        "character_ids": ["hero"],
+        "setting": "清晨庭院，石板路，竹影",
+        "source_paragraph_ids": ["P0001"],
+        "generation_status": "not_submitted",
     }
     with service.sessions.begin() as session:
         row = session.get(RunRow, run_id)
         row.result = {
-            "shots": [shot],
-            "analysis": {
-                "characters": [{"character_id": "hero", "name": "少年", "description": "黑发"}]
-            },
-            "outline": {
-                "scenes": [
+            "script": {
+                "characters": [
                     {
-                        "scene_id": "scene1",
-                        "location": "庭院",
-                        "time": "清晨",
-                        "script": "少年站在庭院。",
+                        "character_id": "hero",
+                        "name": "少年",
+                        "appearance": "黑发少年",
+                        "costume": "蓝色长袍",
                     }
-                ]
+                ],
+                "shots": [shot],
             },
+            "shots": [shot],
+            "paragraphs": [{"paragraph_id": "P0001", "text": "少年站在庭院。"}],
         }
         row.status = "review_required"
     dispatch(
@@ -509,12 +589,16 @@ def test_shot_images_are_versioned_and_missing_appearance_never_uses_biography(
     with service.sessions.begin() as session:
         row = session.get(RunRow, run_id)
         result_data = dict(row.result)
-        shot = {**result_data["shots"][0], "character_prompt": "", "environment_prompt": ""}
+        script = dict(result_data["script"])
+        script["characters"] = []
+        shot = {**script["shots"][0], "setting": ""}
+        script["shots"] = [shot]
+        result_data["script"] = script
         result_data["shots"] = [shot]
         row.result = result_data
     updated = service.shot_image_source(run_id, "s1")
-    assert "请重新生成分镜" in updated["character_prompt"]
-    assert "庭院" in updated["environment_prompt"]
+    assert "请重新生成脚本" in updated["character_prompt"]
+    assert "请先补充场景描述" in updated["environment_prompt"]
     assert updated["source_hash"] != source["source_hash"]
     assert updated["images"] == []
     with pytest.raises(AppError):
@@ -525,52 +609,66 @@ def test_shot_images_are_versioned_and_missing_appearance_never_uses_biography(
         )
 
 
-def test_legacy_failed_run_exposes_saved_shot_batches(service, shot_studio):
+def test_old_four_stage_results_are_not_offered_as_script(service, shot_studio):
+    from novel_anime.persistence.database import RunRow
+
+    chapter, run_id = shot_studio
+    with service.sessions.begin() as session:
+        row = session.get(RunRow, run_id)
+        row.result = {
+            "analysis": {"characters": []},
+            "outline": {"scenes": []},
+            "shots": [
+                {
+                    "shot_id": "s1",
+                    "order": 1,
+                    "character_ids": ["hero"],
+                    "character_prompt": "黑发少年，蓝色长袍",
+                }
+            ],
+        }
+        row.status = "succeeded"
+    listed = service.list_runs(chapter)[0]
+    assert listed["completed_stages"] == []
+    assert service.chapter_overview(chapter)["shots"] == []
+
+
+def test_overview_prefers_script_appearance_and_handles_shots_without_people(service, shot_studio):
     from novel_anime.persistence.database import RunRow
 
     chapter, run_id = shot_studio
     with service.sessions.begin() as session:
         row = session.get(RunRow, run_id)
         result = dict(row.result)
-        result["shot_batches"] = {"scene1": result.pop("shots")}
+        script = dict(result["script"])
+        first = dict(script["shots"][0])
+        second = {**first, "shot_id": "s2", "order": 2, "character_ids": []}
+        third = {**first, "shot_id": "s3", "order": 3, "character_ids": ["stranger"]}
+        script["shots"] = [first, second, third]
+        result["script"] = script
+        result["shots"] = script["shots"]
         row.result = result
-        row.status = "failed"
-    assert len(service.list_runs(chapter)[0]["result"]["shots"]) == 1
-    assert len(service.chapter_overview(chapter)["shots"]) == 1
-    assert service.shot_image_source(run_id, "s1")["character_prompt"] == "黑发少年，蓝色长袍"
+    overview = service.chapter_overview(chapter)
+    assert [shot["shot_id"] for shot in overview["shots"]] == ["s1", "s2", "s3"]
+    assert overview["shots"][1]["subjects"] == []
+    assert overview["shots"][1]["image_source"]["character_prompt"] == "无人物"
+    assert overview["shots"][0]["subjects"][0]["description"] == "黑发少年；蓝色长袍"
+    assert overview["shots"][2]["subjects"][0]["name"] == "stranger"
+    assert overview["shots"][2]["subjects"][0]["description"] == ""
 
 
-def test_unchanged_appearance_is_blank_but_image_source_inherits(service, shot_studio):
+def test_script_rows_are_exposed_as_shots_even_without_a_stored_copy(service, shot_studio):
     from novel_anime.persistence.database import RunRow
 
     _, run_id = shot_studio
     with service.sessions.begin() as session:
         row = session.get(RunRow, run_id)
         result = dict(row.result)
-        first = dict(result["shots"][0])
-        character_id = first["character_ids"][0]
-        first["character_prompts"] = [{"character_id": character_id, "prompt": "黑发，蓝色长袍"}]
-        second = {
-            **first,
-            "shot_id": "s2",
-            "order": 2,
-            "character_prompts": [],
-            "character_prompt": "",
-        }
-        third = {
-            **second,
-            "shot_id": "s3",
-            "order": 3,
-            "character_prompts": [{"character_id": character_id, "prompt": "黑发，湿透的蓝色长袍"}],
-        }
-        result["shots"] = [first, second, third]
+        result.pop("shots")
         row.result = result
-        chapter_id = row.chapter_id
-    assert service.shot_image_source(run_id, "s2")["character_prompt"] == "黑发，蓝色长袍"
-    assert service.shot_image_source(run_id, "s3")["character_prompt"] == "黑发，湿透的蓝色长袍"
-    shots = service.chapter_overview(chapter_id)["shots"]
-    assert shots[1]["subjects"][0]["description"] == ""
-    assert shots[2]["subjects"][0]["description"] == "黑发，湿透的蓝色长袍"
+    run = service.get_run(run_id)
+    assert run["result"]["shots"] == run["result"]["script"]["shots"]
+    assert service.shot_image_source(run_id, "s1")["character_prompt"] == "少年：黑发少年；蓝色长袍"
 
 
 def test_image_layers_upload_adopt_and_pass_actual_references(service, shot_studio, monkeypatch):

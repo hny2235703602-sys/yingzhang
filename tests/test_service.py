@@ -56,7 +56,11 @@ def test_create_run_and_idempotency(service: StudioService) -> None:
         service.create_run(run["chapter_id"], run["profile"], "写实", "16:9", "", "submit-1")
     assert caught.value.code == "idempotency_conflict"
     assert len(service.list_runs(run["chapter_id"])) == 1
-    # Deliberate redo is a new attempt even when all adaptation inputs are identical.
+    # A second run for the same chapter must wait until the current one finishes.
+    with pytest.raises(AppError) as busy:
+        service.create_run(*args[:-1], "submit-2")
+    assert busy.value.code == "invalid_state"
+    service.pause_run(run_id)
     redo = service.create_run(*args[:-1], "submit-2")
     assert redo != run_id
 
@@ -134,14 +138,13 @@ def test_character_image_records_are_work_scoped(service: StudioService) -> None
     assert caught.value.code == "not_found"
 
 
-def test_shot_save_revision_and_archive(service: StudioService) -> None:
-    from test_models import storyboard
+def test_script_save_revision_and_archive(service: StudioService) -> None:
+    from test_models import script
 
-    analysis, outline, shots, paragraphs = storyboard()
+    story, paragraphs = script()
     original = {
-        "analysis": analysis.model_dump(),
-        "outline": outline.model_dump(),
-        "shots": [s.model_dump() for s in shots],
+        "script": story.model_dump(),
+        "shots": [shot.model_dump() for shot in story.shots],
         "paragraphs": [p.model_dump() for p in paragraphs],
     }
     run_id = create_run(service)
@@ -149,18 +152,58 @@ def test_shot_save_revision_and_archive(service: StudioService) -> None:
         row = session.get(RunRow, run_id)
         row.status = "succeeded"
         row.result = original
-    edited = shots[0].model_copy(update={"video_prompt": "更新的视觉描述"}).model_dump()
-    service.save_run_shots(run_id, [edited], 1)
+    edited = story.shots[0].model_copy(update={"dialogue": "少年：“有人吗？”"}).model_dump()
+    service.save_run_script(run_id, {**story.model_dump(), "shots": [edited]}, 1)
     saved = service.get_run(run_id)
     assert saved["revision"] == 2
     assert saved["status"] == "review_required"
+    assert saved["result"]["script"]["shots"] == [edited]
     assert saved["result"]["shots"] == [edited]
     with service.sessions() as session:
         archived = session.scalar(select(ResultVersionRow).where(ResultVersionRow.run_id == run_id))
         assert archived.result == original
     with pytest.raises(AppError) as caught:
-        service.save_run_shots(run_id, [edited], 1)
+        service.save_run_script(run_id, {**story.model_dump(), "shots": [edited]}, 1)
     assert caught.value.code == "version_conflict"
+
+
+def test_script_save_rejects_malformed_rows(service: StudioService) -> None:
+    from test_models import script
+
+    story, paragraphs = script()
+    run_id = create_run(service)
+    with service.sessions.begin() as session:
+        row = session.get(RunRow, run_id)
+        row.status = "succeeded"
+        row.result = {
+            "script": story.model_dump(),
+            "paragraphs": [p.model_dump() for p in paragraphs],
+        }
+    changed = story.shots[0].model_copy(update={"shot_size": "大远景"}).model_dump()
+    with pytest.raises(AppError) as caught:
+        service.save_run_script(run_id, {**story.model_dump(), "shots": [changed]}, 1)
+    assert caught.value.code == "invalid_input"
+    assert "景别" in caught.value.message
+    assert service.get_run(run_id)["revision"] == 1
+
+
+def test_script_save_reports_coverage_problems_as_issues(service: StudioService) -> None:
+    from test_models import script
+
+    story, paragraphs = script()
+    run_id = create_run(service)
+    with service.sessions.begin() as session:
+        row = session.get(RunRow, run_id)
+        row.status = "succeeded"
+        row.result = {
+            "script": story.model_dump(),
+            "paragraphs": [p.model_dump() for p in paragraphs],
+        }
+    service.save_run_script(run_id, {**story.model_dump(), "shots": []}, 1)
+    saved = service.get_run(run_id)
+    assert saved["status"] == "review_required"
+    assert any("没有任何分镜" in issue for issue in saved["validation_issues"])
+    assert saved["result"]["manual_edit"] is True
 
 
 def test_multiple_workers_claim_at_most_one_run(service: StudioService) -> None:
@@ -187,13 +230,13 @@ def test_expired_lease_requires_explicit_retry(service: StudioService) -> None:
     with service.sessions.begin() as session:
         row = session.get(RunRow, run_id)
         row.lease_until = "2000-01-01T00:00:00+00:00"
-        row.result = {"saved_stage": "analysis"}
+        row.result = {"saved_stage": "script"}
     restarted = Worker()
     assert restarted.claim() is None
     run = service.get_run(run_id)
     assert run["status"] == "unknown"
     assert run["owner"] is None
-    assert run["result"] == {"saved_stage": "analysis"}
+    assert run["result"] == {"saved_stage": "script"}
     assert "计费" in run["error_message"]
     service.retry_run(run_id)
     assert restarted.claim() == run_id

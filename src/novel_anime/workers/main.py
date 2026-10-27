@@ -136,14 +136,7 @@ class Worker:
                         raise Stopped()
                     if row.status == "pause_requested":
                         raise Paused()
-                    row.status = (
-                        "stage_complete"
-                        if (document.get("selected_stages") or [document.get("target_stage")])[-1]
-                        in {"analysis", "outline", "shots"}
-                        else "review_required"
-                        if issues
-                        else "succeeded"
-                    )
+                    row.status = "review_required" if issues else "succeeded"
                     row.validation_issues = issues
                     row.updated_at = now()
         except Stopped:

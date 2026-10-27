@@ -1,8 +1,8 @@
-"""Validated contracts shared by adaptation stages (schema version 1)."""
+"""Validated contracts for the story-script stage (schema version 2.0)."""
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 NonEmpty = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 Identifier = Annotated[
@@ -11,6 +11,8 @@ Identifier = Annotated[
         strip_whitespace=True, min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
     ),
 ]
+# 分镜列的景别取值，与提示词和界面保持一致。
+ShotSize = Literal["远景", "全景", "中景", "近景", "特写"]
 
 
 class DomainModel(BaseModel):
@@ -29,10 +31,11 @@ class ModelProfile(DomainModel):
     timeout: float = Field(default=120, gt=0)
     retries: int = Field(default=2, ge=0, le=5)
     structured_output: bool = False
+    # 思考型模型（如 Qwen3.5）会把输出预算消耗在推理上，显式设为 none 可关闭。
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
     temperature: float | None = Field(default=None, ge=0, le=2)
     enabled: bool = True
 
-    @model_validator(mode="after")
     def validate_budget(self) -> "ModelProfile":
         if (
             self.context_budget
@@ -41,6 +44,9 @@ class ModelProfile(DomainModel):
         ):
             raise ValueError("max_output_tokens must be smaller than context_budget")
         return self
+
+    def model_post_init(self, context: object) -> None:
+        self.validate_budget()
 
 
 class VisualProfile(DomainModel):
@@ -87,89 +93,49 @@ class SourceParagraph(DomainModel):
     text: NonEmpty
 
 
-class Character(DomainModel):
+class ScriptCharacter(DomainModel):
+    """本章出场人物，外观供人物图片与后续章节复用。"""
+
     character_id: Identifier
     name: NonEmpty
-    description: NonEmpty
-    source_paragraph_ids: list[Identifier] = Field(default_factory=list)
+    appearance: NonEmpty
+    costume: str = "本章未区分服装"
 
 
-class StoryEvent(DomainModel):
-    event_id: Identifier
-    description: NonEmpty
-    source_paragraph_ids: list[Identifier] = Field(default_factory=list)
-    importance: Literal["must", "condense", "omit", "uncertain"]
-    reason: str = ""
+class ScriptRow(DomainModel):
+    """故事脚本一行：时长 · 分镜（景别＋运镜＋画面描述）· 动作 · 台词。"""
 
-
-class Analysis(DomainModel):
-    summary: NonEmpty
-    core_conflict: str = ""
-    characters: list[Character] = Field(default_factory=list)
-    events: list[StoryEvent] = Field(default_factory=list)
-    uncertainties: list[NonEmpty] = Field(default_factory=list)
-    relations: list[NonEmpty] = Field(default_factory=list)
-
-
-class Scene(DomainModel):
-    scene_id: Identifier
-    title: NonEmpty
-    location: NonEmpty
-    time: NonEmpty
-    script: NonEmpty
-    event_ids: list[Identifier] = Field(default_factory=list)
-
-
-class Outline(DomainModel):
-    synopsis: NonEmpty
-    changes: list[NonEmpty] = Field(default_factory=list)
-    scenes: list[Scene] = Field(default_factory=list)
-
-
-class CharacterAppearancePrompt(DomainModel):
-    character_id: Identifier
-    prompt: NonEmpty = Field(
-        description="仅供生图的可见外观：年龄感、体型、五官、发型、服装、配饰；不含经历、关系、心理、剧情或画风"
+    duration_seconds: float = Field(default=5, gt=0, le=120, description="时长，单位秒")
+    shot_size: ShotSize = Field(description="景别：远景、全景、中景、近景、特写")
+    camera: NonEmpty = Field(description="运镜，例如 缓慢推进、固定、跟拍、轻微环绕")
+    frame: NonEmpty = Field(description="画面描述：镜头里看到的人、物、环境与构图")
+    action: NonEmpty = Field(description="动作：这一镜发生的事")
+    dialogue: str = Field(default="", description="台词，含说话人；没有台词时为空字符串")
+    character_ids: list[Identifier] = Field(
+        default_factory=list, description="本镜出场人物的 character_id"
+    )
+    setting: str = Field(default="", description="场景与环境的一句话描述")
+    source_paragraph_ids: list[Identifier] = Field(
+        default_factory=list, description="本镜依据的原文段落编号"
     )
 
 
-class Shot(DomainModel):
+class ScriptBatch(DomainModel):
+    """一次模型调用产出的连续分镜与人物外观。"""
+
+    characters: list[ScriptCharacter] = Field(default_factory=list)
+    shots: list[ScriptRow] = Field(default_factory=list)
+
+
+class ScriptShot(ScriptRow):
     shot_id: Identifier
-    scene_id: Identifier
     order: int = Field(ge=1)
-    title: NonEmpty
-    source_paragraph_ids: list[Identifier] = Field(default_factory=list)
-    source_event_ids: list[Identifier] = Field(default_factory=list)
-    character_ids: list[Identifier] = Field(default_factory=list)
-    story_purpose: NonEmpty
-    action: NonEmpty
-    shot_size: NonEmpty
-    camera: NonEmpty
-    composition: str = ""
-    character_prompt: str = ""
-    character_prompts: list[CharacterAppearancePrompt] = Field(
-        default_factory=list,
-        description="只填写首次出现或外观变化的人物及变化后的完整外观；无变化或无人物时为空列表",
-    )
-    environment_prompt: str = ""
-    start_state: NonEmpty
-    end_state: NonEmpty
-    continuity_in: dict[str, str] = Field(default_factory=dict)
-    continuity_out: dict[str, str] = Field(default_factory=dict)
-    duration_seconds: float = Field(default=5, gt=0)
-    dialogue: list[NonEmpty] = Field(default_factory=list)
-    requires_dialogue: bool = False
-    requires_text_overlay: bool = False
-    visual_assumptions: list[NonEmpty] = Field(default_factory=list)
-    depends_on_shot_ids: list[Identifier] = Field(default_factory=list)
-    video_prompt: NonEmpty
-    negative_prompt: str | None = None
-    uncertainties: list[NonEmpty] = Field(default_factory=list)
     generation_status: NonEmpty = "not_submitted"
 
 
-class ShotBatch(DomainModel):
-    shots: list[Shot] = Field(default_factory=list)
+class StoryScript(DomainModel):
+    characters: list[ScriptCharacter] = Field(default_factory=list)
+    shots: list[ScriptShot] = Field(default_factory=list)
 
 
 class Review(DomainModel):

@@ -5,7 +5,6 @@ from __future__ import annotations
 import html
 import json
 import logging
-import math
 import os
 import re
 import uuid
@@ -20,12 +19,12 @@ import streamlit as st
 
 from novel_anime.application.service import StudioService
 from novel_anime.core.errors import AppError
-from novel_anime.domain.models import ModelProfile, Shot, VisualProfile
+from novel_anime.domain.models import ModelProfile, StoryScript, VisualProfile
 from novel_anime.ui.export import export_json, export_markdown, safe_payload
 
 LOGGER = logging.getLogger(__name__)
 MAX_UPLOAD_BYTES = 2_000_000
-PAGES = ["章节原文", "改编大纲", "分镜工作台", "本章分析与角色资料", "文本任务"]
+PAGES = ["章节原文", "故事脚本", "视频提示词", "角色资料", "文本任务"]
 STATUS = {
     "pending": "等待执行",
     "queued": "等待执行",
@@ -145,26 +144,31 @@ def sidebar(service: StudioService) -> tuple[str | None, str | None, str]:
         if st.session_state.get("page") not in PAGES:
             st.session_state["page"] = PAGES[0]
         page = st.radio(
-            "页面导航", PAGES, label_visibility="collapsed", key="page",
+            "页面导航",
+            PAGES,
+            label_visibility="collapsed",
+            key="page",
             on_change=lambda: st.session_state.update(settings_open=False),
         )
         st.divider()
         st.markdown('<div class="nav-caption">设 置</div>', unsafe_allow_html=True)
         st.button(
-            "模型与工作流", use_container_width=True,
+            "模型与工作流",
+            use_container_width=True,
             type="primary" if st.session_state.get("settings_open") else "secondary",
             on_click=lambda: st.session_state.update(settings_open=True),
         )
         if st.session_state.get("settings_open"):
             page = "模型与工作流"
             st.button(
-                "返回创作空间", use_container_width=True,
+                "返回创作空间",
+                use_container_width=True,
                 on_click=lambda: st.session_state.update(settings_open=False),
             )
         st.divider()
-        st.caption("本地创作 · 文本改编首期")
-        st.caption("原文 → 本章分析 → 动漫改编 → 分镜审阅")
-        st.caption("视频生成暂未开放。文本任务由独立执行进程处理。")
+        st.caption("本地创作 · 故事脚本首期")
+        st.caption("章节原文 → 故事脚本 → 视频提示词 → 分镜画面")
+        st.caption("视频提示词可编译成 ComfyUI 参数；提交生成尚未开放。")
     return work_id, chapter_id, page
 
 
@@ -178,7 +182,7 @@ def header(page: str, chapter: dict[str, Any] | None, run: dict[str, Any] | None
         st.caption("模型与工作流 · 全局配置")
         return
     st.caption(title if not chapter else f"{chapter['title']} · 原文 v{chapter['revision']}")
-    stages = ["原文理解", "本章分析", "动漫改编", "分镜与提示词", "视频 · 未开放"]
+    stages = ["章节原文", "故事脚本", "视频提示词", "分镜画面", "生成视频 · 未开放"]
     st.markdown(
         '<div class="pipeline">'
         + "".join(
@@ -264,9 +268,9 @@ def source_page(
 def task_submit(
     service: StudioService, chapter: dict[str, Any] | None, profiles: dict[str, dict[str, Any]]
 ) -> None:
-    """Start adaptation from the page the author is reading. The task page only shows records."""
+    """Start script generation from the current page; the task page only shows records."""
     if not chapter:
-        st.info("请先在「章节原文」保存章节，再开始改编。")
+        st.info("请先在「章节原文」保存章节，再开始生成脚本。")
         return
     if not profiles:
         st.info("请先在「模型与工作流」保存模型配置。")
@@ -280,15 +284,13 @@ def task_submit(
             format_func=lambda key: f"{key} · {profiles[key].get('model', '未配置模型')}",
             key=f"run_profile_{chapter['id']}",
         )
-    st.caption(f"将使用已保存的原文 v{chapter['revision']}、当前模型配置和提示词。")
-    if st.button("开始文本改编", type="primary", key=f"start_run_{chapter['id']}"):
+    st.caption(f"将使用已保存的原文 v{chapter['revision']}、当前模型配置和故事脚本提示词。")
+    if st.button("开始生成故事脚本", type="primary", key=f"start_run_{chapter['id']}"):
         token_key = f"submit_token_{chapter['id']}"
         token = st.session_state.setdefault(token_key, uuid.uuid4().hex)
 
         def submit() -> None:
-            service.create_run(
-                chapter["id"], profiles[profile_id], "国风动画", "16:9", "", token
-            )
+            service.create_run(chapter["id"], profiles[profile_id], "国风动画", "16:9", "", token)
             st.session_state[token_key] = uuid.uuid4().hex
 
         execute(submit, "任务已提交。可在「文本任务」查看进度与详情。")
@@ -300,7 +302,7 @@ def task_monitor(service: StudioService, chapter_id: str) -> None:
     st.subheader("文本运行记录")
     st.caption("每 3 秒读取持久化状态。完成仅表示文本阶段完成，视频仍未提交。")
     if not runs:
-        st.info("暂无执行记录。在章节原文、大纲、分镜或分析页点击「开始文本改编」。")
+        st.info("暂无执行记录。在「故事脚本」页点击「开始生成故事脚本」。")
         return
     summary = st.columns(3)
     summary[0].metric("文本运行", len(runs))
@@ -347,149 +349,118 @@ def task_monitor(service: StudioService, chapter_id: str) -> None:
     st.caption("暂停在阶段边界生效；继续与重试由独立执行进程处理，不会重新执行已成功阶段。")
 
 
-def outline_page(run: dict[str, Any] | None) -> None:
-    run = run or {}
-    outline = (run.get("result") or {}).get("outline")
-    if not outline:
-        st.info("暂无改编大纲。保存章节后，可在本页直接开始文本改编。")
-        return
-    st.subheader("故事梗概")
-    render_value(outline.get("synopsis"))
-    a, b = st.columns([1, 2])
-    with a:
-        st.subheader("改编取舍")
-        render_value(outline.get("changes"))
-    with b:
-        st.subheader("场景规划")
-        render_value(outline.get("scenes"))
-    with st.expander("采用时的输入与配置快照"):
-        render_value(run.get("document", {}))
-
-
-def shots_page(service: StudioService, run: dict[str, Any] | None) -> None:
+def script_page(service: StudioService, run: dict[str, Any] | None) -> None:
+    """Show the four script columns in narrative order: 时长 · 分镜 · 动作 · 台词."""
     run = run or {}
     result = run.get("result") or {}
-    shots = result.get("shots") or []
-    if not shots:
-        st.info("当前没有真实分镜结果。保存章节后，可在本页直接开始文本改编。")
-        st.button("生成镜头视频 · 首期未开放", disabled=True)
+    script = result.get("script") or {}
+    rows = script.get("shots") or result.get("shots") or []
+    if not rows:
+        st.info("暂无故事脚本。保存章节后，可在本页直接生成脚本。")
         return
+    total = sum(float(row.get("duration_seconds") or 0) for row in rows)
     cols = st.columns(3)
-    cols[0].metric("本版镜头", len(shots))
-    duration = sum(float(s.get("duration_seconds") or 0) for s in shots)
-    cols[1].metric("规划素材时长", f"{duration:g} 秒" if duration else "尚未标注")
+    cols[0].metric("本版分镜", len(rows))
+    cols[1].metric("规划时长", f"{total:g} 秒")
     cols[2].metric("视频状态", "未提交")
-    st.caption("真实视频耗时尚未实测；规划时长不等于已有视频。")
-    scenes = list(dict.fromkeys(str(s.get("scene_id") or "未分场景") for s in shots))
-    a, b = st.columns([3, 1])
-    scene = a.selectbox("场景筛选", ["全部场景"] + scenes)
-    page_size = b.selectbox("每页镜头", [6, 12, 24])
-    visible = [
-        (index, shot)
-        for index, shot in enumerate(shots)
-        if scene == "全部场景" or str(shot.get("scene_id") or "未分场景") == scene
+    st.caption("分镜列按「景别 · 运镜 · 画面描述」书写；真实视频耗时尚未实测。")
+    if issues := run.get("validation_issues"):
+        with st.expander("脚本待核实", expanded=True):
+            for issue in issues:
+                st.warning(issue)
+    table = [
+        {
+            "编号": row.get("shot_id", ""),
+            "时长": f"{float(row.get('duration_seconds') or 0):g} 秒",
+            "分镜": " · ".join(
+                part
+                for part in (row.get("shot_size", ""), row.get("camera", ""), row.get("frame", ""))
+                if part
+            ),
+            "动作": row.get("action", ""),
+            "台词": row.get("dialogue", ""),
+        }
+        for row in rows
     ]
-    page_count = max(1, math.ceil(len(visible) / page_size))
-    page = st.number_input(
-        "页码",
-        min_value=1,
-        max_value=page_count,
-        value=1,
-        key=f"shots_page_{run['id']}_{scene}_{page_size}",
-    )
-    st.caption(f"筛选结果 {len(visible)} 镜 · 第 {page} / {page_count} 页")
-    cards = st.columns(2)
-    for position, (index, shot) in enumerate(visible[(page - 1) * page_size : page * page_size]):
-        with cards[position % 2], st.container(border=True):
-            st.caption(
-                f"{shot.get('shot_id', shot.get('id', index + 1))} / "
-                f"{shot.get('scene_id', '未分场景')}"
-            )
-            st.markdown(f"**{shot.get('title') or f'镜头 {index + 1:03d}'}**")
-            st.write(shot.get("action") or shot.get("description") or "尚未填写画面动作")
-            st.caption(
-                f"{shot.get('shot_size', shot.get('size', '景别未标注'))} · "
-                f"{shot.get('camera', '机位未标注')}"
-            )
-            st.caption(f"原文依据：{', '.join(shot.get('source_paragraph_ids') or []) or '未标注'}")
+    st.dataframe(table, use_container_width=True, hide_index=True)
+    characters = script.get("characters") or []
+    if characters:
+        st.subheader("本章人物外观")
+        st.dataframe(
+            [
+                {
+                    "编号": person.get("character_id", ""),
+                    "姓名": person.get("name", ""),
+                    "外观": person.get("appearance", ""),
+                    "服装": person.get("costume", ""),
+                }
+                for person in characters
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
     st.divider()
-    st.subheader("镜头细节 · 保存新版本")
+    st.subheader("逐行编辑 · 保存新版本")
     selected = st.selectbox(
-        "选择镜头",
-        list(range(len(shots))),
+        "选择分镜",
+        list(range(len(rows))),
         format_func=lambda index: (
-            f"{index + 1:03d} · {shots[index].get('title') or shots[index].get('shot_id', '')}"
+            f"{rows[index].get('shot_id', index + 1)} · {rows[index].get('shot_size', '')} · "
+            f"{str(rows[index].get('action', ''))[:18]}"
         ),
     )
-    shot = shots[selected]
-    editor_key = f"shot_{run['id']}_{run['revision']}_{selected}"
+    row = rows[selected]
+    editor_key = f"script_{run['id']}_{run['revision']}_{selected}"
     with st.form(editor_key):
         left, right = st.columns(2)
-        title = left.text_input("镜头标题", shot.get("title", ""))
-        size = right.text_input("景别", shot.get("shot_size", ""))
-        purpose = left.text_area("叙事作用", shot.get("story_purpose", ""), height=100)
-        action = right.text_area("画面动作", shot.get("action", ""), height=100)
-        camera = left.text_input("机位与运镜", shot.get("camera", ""))
-        duration = right.number_input(
-            "规划时长 / 秒", min_value=0.1, value=float(shot.get("duration_seconds", 5))
+        duration = left.number_input(
+            "时长 / 秒",
+            min_value=0.5,
+            max_value=120.0,
+            step=0.5,
+            value=float(row.get("duration_seconds") or 5),
         )
-        start = left.text_area("起始状态", shot.get("start_state", ""), height=85)
-        end = right.text_area("结束状态", shot.get("end_state", ""), height=85)
-        prompt = st.text_area("视频提示词 · 语义草案", shot.get("video_prompt", ""), height=150)
-        st.caption(
-            "提示词仅供审阅与导出，当前不会发送到视频模型。原文引用、连续性和其他字段可在下方编辑。"
+        sizes = ["远景", "全景", "中景", "近景", "特写"]
+        current = row.get("shot_size")
+        size = right.selectbox("景别", sizes, index=sizes.index(current) if current in sizes else 2)
+        camera = left.text_input("运镜", row.get("camera", ""))
+        setting = right.text_input("场景与环境", row.get("setting", ""))
+        frame = st.text_area("画面描述 · 只写镜头里看得见的内容", row.get("frame", ""), height=110)
+        action = st.text_area("动作", row.get("action", ""), height=90)
+        dialogue = st.text_area("台词 · 含说话人，没有台词留空", row.get("dialogue", ""), height=80)
+        characters_input = st.text_input(
+            "出场人物编号 · 用逗号分隔", "，".join(row.get("character_ids") or [])
         )
-        with st.expander("引用、连续性与其他字段"):
-            editable = {
-                key: value
-                for key, value in shot.items()
-                if key
-                not in {
-                    "title",
-                    "shot_size",
-                    "story_purpose",
-                    "action",
-                    "camera",
-                    "duration_seconds",
-                    "start_state",
-                    "end_state",
-                    "video_prompt",
-                }
+        if st.form_submit_button("保存脚本为新版本", type="primary"):
+            updated = [dict(item) for item in rows]
+            updated[selected] = {
+                **row,
+                "duration_seconds": duration,
+                "shot_size": size,
+                "camera": camera,
+                "frame": frame,
+                "action": action,
+                "dialogue": dialogue,
+                "setting": setting,
+                "character_ids": [
+                    part.strip()
+                    for part in re.split(r"[,，;；\s]+", characters_input)
+                    if part.strip()
+                ],
             }
-            draft = st.text_area(
-                "扩展镜头字段 JSON",
-                value=json.dumps(editable, ensure_ascii=False, indent=2),
-                height=260,
-                help="保留稳定镜头 ID、场景与原文引用。保存时按 Shot 契约校验。",
-            )
-        st.caption("保存生成新的分镜版本，旧版本由服务保留。")
-        if st.form_submit_button("保存镜头为新版本", type="primary"):
+            combined = {**script, "characters": characters, "shots": updated}
             try:
-                edited = Shot.model_validate(
-                    {
-                        **json.loads(draft),
-                        "title": title,
-                        "shot_size": size,
-                        "story_purpose": purpose,
-                        "action": action,
-                        "camera": camera,
-                        "duration_seconds": duration,
-                        "start_state": start,
-                        "end_state": end,
-                        "video_prompt": prompt,
-                    }
+                payload = StoryScript(
+                    **{**combined, "shots": [dict(item) for item in updated]}
                 ).model_dump(mode="json")
-                updated = [dict(item) for item in shots]
-                updated[selected] = edited
-                execute(
-                    lambda: service.save_run_shots(run["id"], updated, run["revision"]),
-                    "镜头新版本已保存。请复核角色资料与上下文连续性。",
-                )
+
+                def save_version() -> None:
+                    if run:
+                        service.save_run_script(run["id"], payload, run["revision"])
+
+                execute(save_version, "故事脚本新版本已保存，请复核画面连贯与台词还原。")
             except Exception as error:
                 report_error(error)
-    with st.expander("来源段落、审阅与连续性"):
-        render_value(result.get("paragraphs"))
-        render_value(result.get("review"))
     secrets = st.session_state.get("redaction_secrets", ())
     downloads = st.columns(3)
     downloads[0].download_button(
@@ -505,32 +476,153 @@ def shots_page(service: StudioService, run: dict[str, Any] | None) -> None:
         mime="text/markdown",
     )
     downloads[2].button("生成视频 · 未开放", disabled=True)
+    with st.expander("来源段落与执行来源"):
+        render_value(result.get("paragraphs"))
+        render_value(result.get("provenance"))
     st.caption("导出包含采用时的模型、风格、资料与来源快照；真实密钥字段与已知凭证值已脱敏。")
 
 
-def analysis_page(service: StudioService, work_id: str | None, run: dict[str, Any] | None) -> None:
-    tabs = st.tabs(["本章分析", "角色视觉资料", "运行来源与审阅"])
+def video_page(service: StudioService, chapter_id: str | None) -> None:
+    """视频提示词：按目标时长把相邻分镜合并成组，再编译成 ComfyUI 参数。"""
+    if not chapter_id:
+        st.info("先在左侧选择章节，并生成故事脚本。")
+        return
+    config = service.load_video_config() or {}
+    plan = service.video_plan(chapter_id)
+    if not plan["groups"]:
+        st.info("本章还没有故事脚本。请先在「故事脚本」页生成脚本，再回来编译视频提示词。")
+        return
+    preset = plan["preset"]
+    cols = st.columns(4)
+    cols[0].metric("视频组", len(plan["groups"]))
+    cols[1].metric("目标时长", f"{plan['target_seconds']:g} 秒 / 组")
+    cols[2].metric("单组上限", f"{plan['max_seconds']:g} 秒")
+    cols[3].metric("单段帧数", f"{preset['frames']} 帧")
+    st.caption(
+        "相邻分镜按目标时长合并：放不下一个整镜就先收组，例如 13 秒与 6 秒合为一组 19 秒。"
+        "任何情况下都不把一镜拆到两个视频里，所以组时长允许超出目标。"
+    )
+    with st.form("video_config"):
+        left, right = st.columns(2)
+        target = left.number_input(
+            "目标时长 / 秒",
+            min_value=5.0,
+            max_value=60.0,
+            step=1.0,
+            value=float(plan["target_seconds"]),
+        )
+        ceiling = right.number_input(
+            "单组上限 / 秒",
+            min_value=5.0,
+            max_value=60.0,
+            step=1.0,
+            value=float(plan["max_seconds"]),
+        )
+        ratios = ["16:9", "9:16", "1:1"]
+        current_ratio = plan["aspect_ratio"]
+        ratio = st.selectbox(
+            "画幅", ratios, index=ratios.index(current_ratio) if current_ratio in ratios else 0
+        )
+        if st.form_submit_button("保存分组与画幅"):
+            if target > ceiling:
+                st.error("目标时长不能大于单组上限。")
+            else:
+                execute(
+                    lambda: service.save_video_config(
+                        {
+                            **config,
+                            "aspect_ratio": ratio,
+                            "preset": preset["key"],
+                            "target_seconds": float(target),
+                            "max_seconds": float(ceiling),
+                        }
+                    ),
+                    "视频分组参数已保存。",
+                )
+    for group in plan["groups"]:
+        over = group["seconds"] > plan["target_seconds"]
+        st.subheader(
+            f"{group['group_id']} · {group['seconds']:g} 秒 · "
+            f"{len(group['shot_ids'])} 镜 · {group['frames']} 帧"
+        )
+        if over:
+            st.caption(
+                f"超出目标 {plan['target_seconds']:g} 秒：为了不拆开分镜，整镜并入后为 "
+                f"{group['seconds']:g} 秒。"
+            )
+        st.text_area(
+            "整组提示词",
+            group["prompt"],
+            height=140,
+            key=f"video_prompt_{group['group_id']}_{run_key(plan)}",
+        )
+        st.dataframe(
+            [
+                {
+                    "段": item["index"],
+                    "时长": f"{item['seconds']:g} 秒",
+                    "帧数": item["frames"],
+                    "覆盖分镜": "、".join(item["shot_ids"]),
+                    "首帧": "接上一段末帧" if item["continuation"] else "分镜图",
+                }
+                for item in group["passes"]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+        for item in group["passes"]:
+            with st.expander(
+                f"第 {item['index']} 段 · {item['seconds']:g} 秒 / {item['frames']} 帧 · "
+                f"{'、'.join(item['shot_ids']) or '续写'}"
+            ):
+                st.code(item["prompt"], language="text")
+    st.divider()
+    st.subheader(f"工作流参数 · {preset['name']}")
+    st.caption(
+        f"来源：{preset['source']}（ComfyUI 官方 Wan2.2 示例）。"
+        "加载 image_to_video_wan22_5B.json，首帧接分镜图，把提示词与帧数填进对应节点。"
+    )
+    st.dataframe(
+        [
+            {"参数": "分辨率", "取值": f"{preset['width']} × {preset['height']}"},
+            {"参数": "帧率", "取值": f"{preset['fps']} fps"},
+            {"参数": "单段帧数", "取值": f"{preset['frames']}（4n+1）"},
+            {
+                "参数": "采样",
+                "取值": f"steps {preset['sampler']['steps']} · cfg {preset['sampler']['cfg']} · "
+                f"{preset['sampler']['sampler_name']} / {preset['sampler']['scheduler']}",
+            },
+            {"参数": "shift", "取值": f"{preset['sampler']['shift']}"},
+            {"参数": "UNET", "取值": preset["env"]["unet"]},
+            {"参数": "CLIP", "取值": preset["env"]["clip"]},
+            {"参数": "VAE", "取值": preset["env"]["vae"]},
+            {
+                "参数": "输出",
+                "取值": f"{preset['output']['format']} · {preset['output']['codec']} · "
+                f"{preset['output']['fps']} fps",
+            },
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.text_area("负面提示词 · 官方默认", plan["negative"], height=110)
+    st.button("提交 ComfyUI 生成 · 未开放", disabled=True)
+
+
+def run_key(plan: dict[str, Any]) -> str:
+    """Stable widget suffix so重新生成后提示词输入框不会串版本。"""
+    run = plan.get("run") or {}
+    return str(run.get("updated_at") or run.get("id") or "")
+
+
+def character_page(service: StudioService, work_id: str | None, run: dict[str, Any] | None) -> None:
+    tabs = st.tabs(["角色视觉资料", "脚本人物", "运行来源与审阅"])
     with tabs[0]:
-        analysis = ((run or {}).get("result") or {}).get("analysis")
-        if not analysis:
-            st.info("本章分析尚未生成。人物关系仅依据当前输入，不自动扩展为完整跨章记忆库。")
-        else:
-            for key, label in [
-                ("summary", "本章概要"),
-                ("core_conflict", "核心冲突"),
-                ("characters", "本章人物"),
-                ("events", "叙事事件"),
-                ("relations", "人物关系"),
-                ("uncertainties", "缺口与待核实"),
-            ]:
-                st.subheader(label)
-                render_value(analysis.get(key))
-    with tabs[1]:
         if not work_id:
             st.info("先创建作品，即可保存跨章节复用的角色视觉资料。")
         else:
             profiles = service.list_visual_profiles(work_id)
-            st.caption("保存为新资料版本。既有运行保留采用时的快照，不自动重写已生成分镜。")
+            st.caption("保存为新资料版本。既有运行保留采用时的快照，不自动重写已生成脚本。")
             for profile in profiles:
                 with st.expander(
                     f"{profile.get('character_id', '角色')} · v{profile.get('version', '?')}"
@@ -600,9 +692,33 @@ def analysis_page(service: StudioService, work_id: str | None, run: dict[str, An
                             report_error(error)
                 with st.expander("角色资料字段说明"):
                     st.json(VisualProfile.model_json_schema())
+    with tabs[1]:
+        characters = (((run or {}).get("result") or {}).get("script") or {}).get("characters") or []
+        if not characters:
+            st.info("脚本尚未生成本章人物外观。生成脚本后，可在此一键存为角色资料。")
+        else:
+            st.dataframe(
+                [
+                    {
+                        "编号": person.get("character_id", ""),
+                        "姓名": person.get("name", ""),
+                        "外观": person.get("appearance", ""),
+                        "服装": person.get("costume", ""),
+                    }
+                    for person in characters
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+            pending = service.character_suggestions(work_id) if work_id else []
+            st.caption(f"尚未保存为角色资料的脚本人物：{len(pending)} 位。")
+            if work_id and pending and st.button("采用脚本人物外观"):
+                execute(
+                    partial(service.adopt_character_suggestions, work_id),
+                    "已保存为角色资料，可在分镜图片中使用。",
+                )
     with tabs[2]:
         if run:
-            render_value((run.get("result") or {}).get("review"))
             render_value((run.get("result") or {}).get("provenance"))
             render_value(run.get("validation_issues"))
             with st.expander("采用时的输入与配置"):
@@ -787,9 +903,12 @@ def settings_page(service: StudioService, profiles: dict[str, dict[str, Any]]) -
         )
     st.divider()
     st.subheader("ComfyUI 视频工作流 · 保留配置")
-    st.info("首期只执行文本改写。视频生成禁用，保存此配置不会连接 ComfyUI，也不会创建视频任务。")
+    st.info(
+        "分镜已在「视频提示词」页编译成 Wan2.2 TI2V-5B 的提示词与参数；"
+        "保存此配置不会连接 ComfyUI，也不会创建视频任务。"
+    )
     video = service.load_video_config() or {}
-    with st.form("video_config"):
+    with st.form("video_settings"):
         url = st.text_input("ComfyUI 服务地址", video.get("base_url", "http://127.0.0.1:8188"))
         workflow = st.text_input("API 工作流模板路径 / 备注", video.get("workflow", ""))
         ratio = st.selectbox(
@@ -830,7 +949,7 @@ def main() -> None:
         chapter = service.get_chapter(chapter_id) if chapter_id else None
         runs = service.list_runs(chapter_id) if chapter_id else []
         run = None
-        if runs and page in ["改编大纲", "分镜工作台", "本章分析与角色资料"]:
+        if runs and page in ["故事脚本", "角色资料"]:
             run_id = st.selectbox(
                 "查看运行版本",
                 [item["id"] for item in runs],
@@ -851,17 +970,18 @@ def main() -> None:
         if page == "章节原文":
             source_page(service, work_id, chapter)
             task_submit(service, chapter, profiles)
-        elif page == "改编大纲":
+        elif page == "故事脚本":
             task_submit(service, chapter, profiles)
-            outline_page(run)
-        elif page == "分镜工作台":
+            script_page(service, run)
+        elif page == "视频提示词":
+            video_page(service, chapter_id)
+        elif page == "角色资料":
             task_submit(service, chapter, profiles)
-            shots_page(service, run)
-        elif page == "本章分析与角色资料":
-            task_submit(service, chapter, profiles)
-            analysis_page(service, work_id, run)
+            character_page(service, work_id, run)
         elif page == "文本任务":
-            st.caption("这里只查看进度、失败原因和已保存阶段。开始改编请在章节原文、大纲、分镜或分析页操作。")
+            st.caption(
+                "这里只查看进度、失败原因和已保存结果。生成脚本请在「章节原文」或「故事脚本」页操作。"
+            )
             if chapter_id:
                 task_monitor(service, chapter_id)
         else:

@@ -2,6 +2,7 @@
 data/
 __pycache__/
 .pytest_cache/
+pytest-of-*/
 .mypy_cache/
 .ruff_cache/
 .env
@@ -15,3 +16,8 @@ config/
 .DS_Store
 *.pem
 *.key
+# 本地运行日志与调试产物
+_*.out
+_*.err
+_object_info.json
+_wan_out/
