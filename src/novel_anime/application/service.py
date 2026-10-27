@@ -5,10 +5,11 @@ import json
 from typing import Any
 from uuid import uuid4
 
+from pydantic import ValidationError
 from sqlalchemy import select, update
 
 from novel_anime.core.errors import AppError
-from novel_anime.domain.models import InputDocument, ModelProfile, Shot, VisualProfile
+from novel_anime.domain.models import Character, InputDocument, ModelProfile, Shot, VisualProfile
 from novel_anime.persistence.database import (
     ChapterRow,
     ConfigRow,
@@ -230,6 +231,54 @@ class StudioService:
     def save_video_config(self, config: dict[str, Any]) -> None:
         allowed = {"base_url", "workflow", "aspect_ratio", "comfy", "ratio", "workflow_note"}
         self._save_config("video", {k: v for k, v in config.items() if k in allowed})
+
+    def character_suggestions(self, work_id: str) -> list[dict[str, Any]]:
+        """Characters named by the latest analysis and not yet saved as visual profiles."""
+        confirmed = {item["character_id"] for item in self.list_visual_profiles(work_id)}
+        suggestions: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for chapter in self.list_chapters(work_id):
+            for run in self.list_runs(chapter["id"]):
+                characters = ((run.get("result") or {}).get("analysis") or {}).get("characters") or []
+                if not characters:
+                    continue
+                for character in characters:
+                    try:
+                        parsed = Character.model_validate(character)
+                    except ValidationError:
+                        continue
+                    if parsed.character_id in confirmed or parsed.character_id in seen:
+                        continue
+                    seen.add(parsed.character_id)
+                    suggestions.append(
+                        {
+                            "character_id": parsed.character_id,
+                            "name": parsed.name,
+                            "appearance": parsed.description,
+                            "costume": "本章分析未分开描述服装",
+                            "source": chapter["title"],
+                        }
+                    )
+                break
+        return suggestions
+
+    def adopt_character_suggestions(self, work_id: str) -> int:
+        saved = 0
+        for item in self.character_suggestions(work_id):
+            self.save_visual_profile(
+                work_id,
+                {
+                    "character_id": item["character_id"],
+                    "name": item["name"],
+                    "appearance": item["appearance"],
+                    "costume": item["costume"],
+                    "origin": "改编设定",
+                    "version": 1,
+                    "reference": item["source"],
+                },
+            )
+            saved += 1
+        return saved
 
     def list_visual_profiles(self, work_id: str) -> list[dict[str, Any]]:
         with self.sessions() as session:

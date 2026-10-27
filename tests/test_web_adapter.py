@@ -67,11 +67,14 @@ def test_simple_profile_secret_keep_clear_and_disabled(monkeypatch, tmp_path):
         "key": "test-private-value",
     }
     dispatch(service, "simple-profile", body)
+    assert service.load_profiles()["online"]["max_output_tokens"] == 0
+    assert service.load_profiles()["online"]["context_budget"] == 0
     env = service.load_profiles()["online"]["api_key_env"]
     assert resolve_key(env) == "test-private-value"
     assert credential_path().stat().st_mode & 0o777 == 0o600
     assert "test-private-value" not in json.dumps(snapshot(service))
     assert snapshot(service)["profiles"][0]["key_configured"] is True
+    assert snapshot(service)["profiles"][0]["key_tail"] == "alue"
     dispatch(service, "simple-profile", {**body, "key": "", "temperature": 0.7})
     assert resolve_key(env) == "test-private-value"
     assert service.load_profiles()["online"]["temperature"] == 0.7
@@ -82,3 +85,4 @@ def test_simple_profile_secret_keep_clear_and_disabled(monkeypatch, tmp_path):
     dispatch(service, "simple-profile", {**body, "key": "", "clear_key": True})
     assert resolve_key(env) == ""
     assert snapshot(service)["profiles"][0]["key_configured"] is False
+    assert snapshot(service)["profiles"][0]["key_tail"] == ""

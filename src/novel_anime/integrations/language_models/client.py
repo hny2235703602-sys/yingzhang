@@ -204,8 +204,9 @@ class LLMClient:
                     kwargs: dict[str, Any] = {
                         "model": self.profile.model,
                         "messages": messages,
-                        "max_tokens": self.profile.max_output_tokens,
                     }
+                    if self.profile.max_output_tokens:
+                        kwargs["max_tokens"] = self.profile.max_output_tokens
                     if self.profile.structured_output:
                         kwargs["response_format"] = {
                             "type": "json_schema",
@@ -219,8 +220,9 @@ class LLMClient:
                     kwargs = {
                         "model": self.profile.model,
                         "input": messages,
-                        "max_output_tokens": self.profile.max_output_tokens,
                     }
+                    if self.profile.max_output_tokens:
+                        kwargs["max_output_tokens"] = self.profile.max_output_tokens
                     if self.profile.structured_output:
                         kwargs["text"] = {
                             "format": {

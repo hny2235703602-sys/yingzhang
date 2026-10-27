@@ -227,6 +227,90 @@ def test_short_dialogue_chapter_fits_default_budget(monkeypatch: pytest.MonkeyPa
     assert "analysis" in result
 
 
+def test_truncated_analysis_splits_then_continues(monkeypatch: pytest.MonkeyPatch) -> None:
+    sizes: list[int] = []
+
+    def generate(
+        self: LLMClient, schema: type[BaseModel], system: str, payload: dict[str, Any], stage: str
+    ) -> tuple[BaseModel, dict[str, Any]]:
+        if stage == "analysis" and "paragraphs" in payload:
+            size = len(payload["paragraphs"])
+            sizes.append(size)
+            if size > 1:
+                raise AppError("llm_truncated", "模型输出被截断，请增加输出预算或缩小输入。")
+        return fake_models()[stage], {"stage": stage}
+
+    monkeypatch.setattr(LLMClient, "generate", generate)
+    document = InputDocument(work_id="work", title="章节", text="甲走进庭院。\n\n乙停下脚步。").model_dump()
+    profile = ModelProfile(
+        provider="local",
+        protocol="chat_completions",
+        base_url="http://localhost:1234/v1",
+        model="fake",
+        api_key_env="",
+        context_budget=16000,
+        max_output_tokens=4000,
+    )
+    flow = AdaptationFlow(document, profile, lambda result, stage: None, lambda stage: None)
+    result = flow.run({}, InMemorySaver(), "split-analysis")
+    assert sizes == [2, 1, 1]
+    assert result["analysis_covered"] == ["P0001", "P0002"]
+    assert "analysis" in result
+
+
+def test_truncated_shots_split_by_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    analysis, outline, shots, source = storyboard()
+    analysis_data = analysis.model_dump()
+    second_event = deepcopy(analysis_data["events"][0])
+    second_event["event_id"] = "EV002"
+    second_event["source_paragraph_ids"] = ["P0002"]
+    analysis_data["events"].append(second_event)
+    outline_data = outline.model_dump()
+    outline_data["scenes"][0]["event_ids"] = ["EV001", "EV002"]
+    sizes: list[int] = []
+
+    def generate(
+        self: LLMClient, schema: type[BaseModel], system: str, payload: dict[str, Any], stage: str
+    ) -> tuple[BaseModel, dict[str, Any]]:
+        if stage != "shots":
+            return Review(), {"stage": stage}
+        sizes.append(len(payload["events"]))
+        if len(payload["events"]) > 1:
+            raise AppError("llm_truncated", "模型输出被截断，请增加输出预算或缩小输入。")
+        event_id = payload["events"][0]["event_id"]
+        shot = shots[0].model_copy(
+            update={
+                "shot_id": f"SC001_{event_id}",
+                "source_event_ids": [event_id],
+                "order": len(sizes),
+            }
+        )
+        return ShotBatch(shots=[shot]), {"stage": stage}
+
+    monkeypatch.setattr(LLMClient, "generate", generate)
+    document = InputDocument(work_id="work", title="章节", text="少年推开殿门。").model_dump()
+    profile = ModelProfile(
+        provider="local",
+        protocol="chat_completions",
+        base_url="http://localhost:1234/v1",
+        model="fake",
+        api_key_env="",
+    )
+    initial = {
+        "paragraphs": [
+            paragraph.model_dump() for paragraph in source
+        ]
+        + [{"paragraph_id": "P0002", "text": "门轴响了一声。"}],
+        "analysis": analysis_data,
+        "outline": outline_data,
+        "provenance": [],
+    }
+    flow = AdaptationFlow(document, profile, lambda result, stage: None, lambda stage: None)
+    result = flow.run(initial, InMemorySaver(), "split-shots")
+    assert sizes == [2, 1, 1]
+    assert [shot["source_event_ids"] for shot in result["shots"]] == [["EV001"], ["EV002"]]
+
+
 def test_single_paragraph_over_budget_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     def generate(
         self: LLMClient, schema: type[BaseModel], system: str, payload: dict[str, Any], stage: str

@@ -83,6 +83,18 @@ def test_chat_schema_instruction_usage_and_no_sensitive_logs(
     assert "secret-sentinel" not in json.dumps(metadata)
 
 
+def test_unlimited_output_omits_max_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=chat())
+
+    install(monkeypatch, handler)
+    LLMClient(profile(max_output_tokens=0, context_budget=0)).generate(Review, "审阅", {}, "review")
+    assert "max_tokens" not in requests[0]
+
+
 def test_responses_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)

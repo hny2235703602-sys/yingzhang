@@ -24,8 +24,8 @@ class ModelProfile(DomainModel):
     base_url: NonEmpty
     model: NonEmpty
     api_key_env: str = "NOVEL_LLM_API_KEY"
-    context_budget: int = Field(default=16000, gt=0)
-    max_output_tokens: int = Field(default=4000, gt=0)
+    context_budget: int = Field(default=16000, ge=0)
+    max_output_tokens: int = Field(default=4000, ge=0)
     timeout: float = Field(default=120, gt=0)
     retries: int = Field(default=2, ge=0, le=5)
     structured_output: bool = False
@@ -34,7 +34,11 @@ class ModelProfile(DomainModel):
 
     @model_validator(mode="after")
     def validate_budget(self) -> "ModelProfile":
-        if self.max_output_tokens >= self.context_budget:
+        if (
+            self.context_budget
+            and self.max_output_tokens
+            and self.max_output_tokens >= self.context_budget
+        ):
             raise ValueError("max_output_tokens must be smaller than context_budget")
         return self
 

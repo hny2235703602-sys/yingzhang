@@ -288,6 +288,8 @@ button,input,select,textarea{font:inherit}button{touch-action:manipulation}butto
 @media(min-width:1600px){.app{grid-template-columns:250px 1fr}.sidebar{padding-left:22px;padding-right:22px}.topbar{padding-left:50px;padding-right:50px}}
 @media(max-width:1100px){.app{grid-template-columns:190px 1fr}.topbar{padding:0 24px}#workspace,#text-pages{padding:24px}.welcome{padding:28px}.welcome-art{margin:0}.welcome-art div{width:58px;height:85px;font-size:30px}.welcome h2{font-size:26px}.editor-grid{grid-template-columns:1fr}.guidance{margin-top:16px}.stats>div{padding:17px}.settings-grid{grid-template-columns:1fr}.shelf-toolbar{align-items:flex-start;flex-direction:column}.toast{left:calc(50% + 95px)}}
 @media(max-width:700px){.app{display:block}.sidebar{height:auto;position:relative;min-height:0;padding:16px;border-bottom:1px solid var(--line);border-right:0}.brand{margin-bottom:14px}.sidebar-body{margin:0;display:flex;flex-direction:column;gap:7px}.nav{flex-direction:row;gap:4px;overflow-x:auto}.nav button{width:auto;white-space:nowrap;flex:none;padding:8px 10px;font-size:11px}.nav button svg{width:15px;height:15px}.nav-label,.nav-split,.sidebar-footer{display:none}.topbar{height:70px;padding:0 18px}#workspace,#text-pages{padding:20px 16px}.welcome{padding:25px 22px}.welcome h2{font-size:25px}.welcome-art{display:none}.stats{grid-template-columns:1fr 1fr;margin-bottom:25px}.stats>div{padding:16px 20px}.subnav{padding:0 18px;gap:22px}.shelf-toolbar{padding:22px 18px 0}.shelf-tools{flex-wrap:wrap;width:100%}.shelf-tools input{max-width:none;flex:1;min-width:100px}.covers{padding:22px 18px;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px 18px}.drawer-panel-inner{padding:22px 18px}.drawer-body{grid-template-columns:90px 1fr;gap:16px}.meta-row{display:flex;align-items:stretch;flex-direction:column;font-size:12px;gap:5px}.meta-row input,.meta-row select{font-size:12px}.cast{overflow:auto}.cast table{min-width:400px}.notice{flex-direction:column;gap:3px;font-size:11px}.prompt-grid,.field-row{grid-template-columns:1fr;gap:0}.prompt-grid{gap:18px}.panel{padding:20px}.task-summary{grid-template-columns:1fr;gap:15px}.recent-time{font-size:9px}.chapter-bar>.muted{margin-left:0}.toast{left:50%}.empty-state{padding:35px 12px}.section-head{align-items:flex-start}.topbar-right .prototype-tag{max-width:90px;font-size:9px}.field input,.field select,.field textarea{font-size:16px}}
+#book-layout{padding:24px 36px;max-width:1480px;margin:0 auto;align-items:start}#book-layout #text-pages{padding:0;max-width:none;margin:0}#book-layout>.guidance{position:sticky;top:16px;align-self:start}
+@media(min-width:801px){#book-layout{grid-template-columns:minmax(0,1fr) 260px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;scroll-behavior:auto!important}}
 
 </style>
@@ -316,9 +318,9 @@ button,input,select,textarea{font:inherit}button{touch-action:manipulation}butto
     <header class="topbar"><div class="topbar-left"><button type="button" class="back hidden" id="back-novels" aria-label="返回作品库">←</button><div><div class="breadcrumb" id="breadcrumb">映章 / 创作空间</div><h1 id="page-title">首页</h1></div></div><div class="topbar-right"><span class="prototype-tag">交互原型 · 未连接 API</span><span class="avatar" aria-label="个人工作台">映</span></div></header>
     <nav class="subnav hidden" id="text-tabs" aria-label="文生文页面">
       <button type="button" class="active" data-text="source">章节原文</button>
+      <button type="button" data-text="analysis">本章分析与角色资料</button>
       <button type="button" data-text="outline">改编大纲</button>
       <button type="button" data-text="shots">分镜工作台</button>
-      <button type="button" data-text="analysis">本章分析与角色资料</button>
     </nav>
     <p class="page-note hidden" id="page-note">服务代开发，暂不可用</p>
     <div class="shelf hidden" id="novel-shelf">
@@ -358,11 +360,14 @@ button,input,select,textarea{font:inherit}button{touch-action:manipulation}butto
       </section>
     </div>
     <div id="workspace"></div>
-    <div id="text-pages" class="hidden">
-      <section data-text-page="source"></section>
-      <section data-text-page="outline" class="hidden"></section>
-      <section data-text-page="shots" class="hidden"></section>
-      <section data-text-page="analysis" class="hidden"></section>
+    <div id="book-layout" class="editor-grid hidden">
+      <div id="text-pages">
+        <section data-text-page="source"></section>
+        <section data-text-page="analysis" class="hidden"></section>
+        <section data-text-page="outline" class="hidden"></section>
+        <section data-text-page="shots" class="hidden"></section>
+      </div>
+      <aside id="page-status" class="panel guidance"></aside>
     </div>
   </main>
 </div>
@@ -400,7 +405,7 @@ function render(){
  $('text-tabs').classList.toggle('hidden',!inBook);
  document.querySelector('.main').classList.toggle('has-tabs',!!inBook);
  $('novel-shelf').classList.toggle('hidden',route!=='text'||!!inBook);
- $('text-pages').classList.toggle('hidden',!inBook);
+ $('book-layout').classList.toggle('hidden',!inBook);
  $('page-note').classList.add('hidden');
  $('workspace').hidden=!!inBook||route==='text';
  if(inBook)renderBook();else if(route==='text')renderShelf();else if(route==='home')renderHome();else if(route==='models')renderModels();else if(route==='prompts')renderPrompts();else renderUnavailable();
@@ -428,7 +433,7 @@ function renderBook(){
  document.querySelectorAll('[data-text]').forEach(b=>{b.classList.toggle('active',b.dataset.text===tab);b.setAttribute('aria-selected',String(b.dataset.text===tab));});
  document.querySelectorAll('[data-text-page]').forEach(p=>p.classList.toggle('hidden',p.dataset.textPage!==tab));
  const host=document.querySelector(`[data-text-page="${tab}"]`);let c=chapter();let content='';
- if(tab==='source')content=`<div class="editor-grid"><section class="panel"><div class="section-head"><div><h2>章节原文</h2><p>保存正文后，再开始文本改编。</p></div><label class="btn">导入 TXT<input type="file" id="import-text" accept=".txt,text/plain" hidden></label></div><label class="field">章节标题<input id="chapter-title" maxlength="100" value="${esc(c?.title||'')}" placeholder="例如：第一章 · 山雨欲来"></label><label class="field">正文<textarea id="chapter-text" class="manuscript" placeholder="粘贴这一章的故事……">${esc(c?.text||'')}</textarea></label><div class="editor-footer"><span id="word-count">${(c?.text||'').replace(/\s/g,'').length} 字</span><span id="save-state">${c?'已保存至浏览器':'尚未保存'}</span></div><label class="field">可选前情<textarea id="chapter-context" rows="3" placeholder="仅填写理解本章所需的前情，不会自动读取其他章节。">${esc(c?.context||'')}</textarea></label><div class="actions">${button('保存章节','save-chapter',true)}</div></section><aside class="panel guidance" id="page-status"></aside></div>`;
+ if(tab==='source')content=`<section class="panel"><div class="section-head"><div><h2>章节原文</h2><p>保存正文后，再开始文本改编。</p></div><label class="btn">导入 TXT<input type="file" id="import-text" accept=".txt,text/plain" hidden></label></div><label class="field">章节标题<input id="chapter-title" maxlength="100" value="${esc(c?.title||'')}" placeholder="例如：第一章 · 山雨欲来"></label><label class="field">正文<textarea id="chapter-text" class="manuscript" placeholder="粘贴这一章的故事……">${esc(c?.text||'')}</textarea></label><div class="editor-footer"><span id="word-count">${(c?.text||'').replace(/\s/g,'').length} 字</span><span id="save-state">${c?'已保存至浏览器':'尚未保存'}</span></div><label class="field">可选前情<textarea id="chapter-context" rows="3" placeholder="仅填写理解本章所需的前情，不会自动读取其他章节。">${esc(c?.context||'')}</textarea></label><div class="actions">${button('保存章节','save-chapter',true)}</div></section>`;
  else if(tab==='analysis')content=`<div class="panel"><div class="section-head"><div><h2>本章分析与角色资料</h2><p>分析结果绑定章节和原文版本，角色资料确认后用于后续镜头。</p></div>${badge('尚未分析')}</div>${empty('还没有分析结果',c?'章节已保存。接通真实模型后，可在此审阅事件、人物、引用和存疑项。':'请先在「章节原文」保存一章。',button('返回章节原文','source'))}<div class="notice">角色关系与原文依据属于本章；角色外观、服装和参考图作为作品资料维护，不自动覆盖已确认版本。</div></div>`;
  else if(tab==='outline'||tab==='shots')content=`<div class="panel"><div class="section-head"><div><h2>${tab==='outline'?'改编大纲':'分镜工作台'}</h2><p>${tab==='outline'?'按场景组织冲突、动作与信息揭示。':'逐镜审阅景别、动作、连续性与提示词。'}</p></div>${badge('暂无生成结果')}</div>${empty(tab==='outline'?'故事还没有改编成场景':'镜头，等待故事落笔。','原型不会伪造模型结果。先保存章节，再配置线上模型。',button('返回章节原文','source',true))}</div>`;
  else content=`<section class="panel"><div class="section-head"><div><h2>文本任务</h2><p>分析 → 大纲 → 分镜与提示词 → 复核</p></div>${badge('未连接','amber')}</div><div class="task-summary"><div><small>当前章节</small><b>${esc(c?.title||'尚未保存章节')}</b></div><div><small>语言模型</small><b>${esc(data.profiles.find(p=>p.id===data.activeProfile)?.model||'未配置')}</b></div><div><small>执行方式</small><b>线上 API · 云端执行</b></div></div><div class="notice"><b>此文件为页面原型</b><span>保存的配置不会同步到云服务器。这里不创建真实任务、不扣费，也不展示模拟成功结果。</span></div><div class="actions"><button class="btn primary" disabled title="需接入云端应用后使用">提交文本改编 · 待接入</button>${button('配置模型 →','models')}</div></section><section class="panel task-empty">${empty('暂无执行记录','真实接入后显示阶段、更新时间、失败原因和执行尝试；重试保留已保存结果。')}</section>`;

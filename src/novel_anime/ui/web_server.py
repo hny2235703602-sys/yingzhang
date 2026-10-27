@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -33,22 +34,29 @@ def snapshot(service: StudioService) -> dict:
                 **work,
                 "style": extra.get("style", "国风动画"),
                 "updated": extra.get("updated", ""),
-                "characters": service.list_visual_profiles(work["id"]),
+                "characters": [
+                    {**profile, "source": profile.get("reference") or profile.get("source") or ""}
+                    for profile in service.list_visual_profiles(work["id"])
+                ],
+                "character_suggestions": service.character_suggestions(work["id"]),
                 "chapters": service.list_chapters(work["id"]),
             }
         )
-    profiles = [
-        {
-            **p,
-            "id": key,
-            "name": p["provider"],
-            "url": p["base_url"],
-            "env": p["api_key_env"],
-            "tokens": p["max_output_tokens"],
-            "key_configured": bool(resolve_key(p["api_key_env"])),
-        }
-        for key, p in service.load_profiles().items()
-    ]
+    profiles = []
+    for key, p in service.load_profiles().items():
+        stored = resolve_key(p["api_key_env"])
+        profiles.append(
+            {
+                **p,
+                "id": key,
+                "name": p["provider"],
+                "url": p["base_url"],
+                "env": p["api_key_env"],
+                "tokens": p["max_output_tokens"],
+                "key_configured": bool(stored),
+                "key_tail": stored[-4:] if len(stored) > 4 else "",
+            }
+        )
     from novel_anime.core.settings import ROOT
 
     saved = service._load_config("prompt_templates")
@@ -131,10 +139,16 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
         timeout = float(body.get("timeout", 120))
         if not 10 <= timeout <= 600:
             raise AppError("invalid_input", "超时范围为 10 到 600 秒。")
-        max_output = int(existing.get("max_output_tokens", 4000))
-        context_budget = int(body.get("context_budget", existing.get("context_budget", 16000)))
-        if context_budget <= max_output:
-            raise AppError("invalid_input", f"上下文预算须大于最大输出 {max_output} token。")
+        if "max_output" in body or "context_budget" in body:
+            max_output = int(body.get("max_output", existing.get("max_output_tokens", 8000)))
+            if not 256 <= max_output <= 128000:
+                raise AppError("invalid_input", "最大输出范围为 256 到 128000 token。")
+            context_budget = int(body.get("context_budget", existing.get("context_budget", 16000)))
+            if context_budget <= max_output:
+                raise AppError("invalid_input", f"上下文预算须大于最大输出 {max_output} token。")
+        else:
+            max_output = 0
+            context_budget = 0
         profile = ModelProfile(
             **{
                 **existing,
@@ -145,6 +159,7 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
                 "model": body.get("model", "catalog"),
                 "timeout": timeout,
                 "temperature": body.get("temperature", 1),
+                "max_output_tokens": max_output,
                 "context_budget": context_budget,
                 "enabled": body.get("enabled", True),
                 "api_key_env": existing.get("api_key_env") or f"YINGZHANG_KEY_{ident}",
@@ -185,6 +200,9 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
             body["idempotency_key"],
         )
         return {"id": ident}
+    if action == "adopt-characters":
+        count = service.adopt_character_suggestions(body["work_id"])
+        return {"adopted": count}
     if action in {"pause", "resume", "retry"}:
         getattr(service, action + "_run")(body["id"])
         return {"id": body["id"]}
@@ -268,7 +286,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    server = ThreadingHTTPServer(("127.0.0.1", 8501), Handler)
+    host = os.environ.get("YINGZHANG_WEB_HOST", "127.0.0.1")
+    port = int(os.environ.get("YINGZHANG_WEB_PORT", "8501"))
+    server = ThreadingHTTPServer((host, port), Handler)
     server.serve_forever()
 
 

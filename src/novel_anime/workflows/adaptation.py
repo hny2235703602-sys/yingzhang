@@ -53,6 +53,8 @@ class AdaptationFlow:
     def _within_budget(self, schema: Any, stage: str, payload: dict[str, Any]) -> bool:
         # CJK costs more than JSON punctuation. A flat two tokens per character
         # rejected a few thousand characters of short dialogue before any model call.
+        if not self.profile.context_budget or not self.profile.max_output_tokens:
+            return True
         return self.client.request_tokens(self._template(stage), payload, schema) <= (
             self.profile.context_budget - self.profile.max_output_tokens
         )
@@ -97,13 +99,9 @@ class AdaptationFlow:
             self.save(result, "prepare")
         return {"result": result}
 
-    def analysis(self, state: FlowState) -> FlowState:
-        result = dict(state["result"])
-        if "analysis" in result:
-            return {"result": result}
-        # Paragraph boundaries remain stable even when analysis runs in smaller chunks.
+    def _paragraph_chunks(self, items: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
         chunks: list[list[dict[str, Any]]] = [[]]
-        for paragraph in result["paragraphs"]:
+        for paragraph in items:
             single = self._analysis_payload([paragraph], [], 0)
             if not self._within_budget(Analysis, "analysis", single):
                 raise AppError(
@@ -116,20 +114,47 @@ class AdaptationFlow:
             ):
                 chunks.append([])
             chunks[-1].append(paragraph)
+        return [chunk for chunk in chunks if chunk]
+
+    def analysis(self, state: FlowState) -> FlowState:
+        result = dict(state["result"])
+        if "analysis" in result:
+            return {"result": result}
+        covered = list(result.get("analysis_covered") or [])
+        covered_ids = set(covered)
+        remaining = [p for p in result["paragraphs"] if p["paragraph_id"] not in covered_ids]
         parts = result.setdefault("analysis_parts", [])
-        for index in range(len(parts), len(chunks)):
-            extracted = self.call(
-                result,
-                Analysis,
-                "analysis",
-                self._analysis_payload(
-                    chunks[index],
-                    parts[-1].get("characters", []) if parts else [],
-                    index,
-                ),
-            )
-            parts.append(extracted.model_dump())
-            self.save(result, f"analysis {index + 1}/{len(chunks)}")
+        for chunk in self._paragraph_chunks(remaining):
+            queue = [chunk]
+            while queue:
+                current = queue.pop(0)
+                try:
+                    extracted = self.call(
+                        result,
+                        Analysis,
+                        "analysis",
+                        self._analysis_payload(
+                            current,
+                            parts[-1].get("characters", []) if parts else [],
+                            len(parts),
+                        ),
+                    )
+                except AppError as exc:
+                    if exc.code == "llm_truncated" and len(current) > 1:
+                        # The whole chunk exceeded the output cap. Keep paragraph order and retry halves.
+                        middle = len(current) // 2
+                        queue[:0] = [current[:middle], current[middle:]]
+                        continue
+                    if exc.code == "llm_truncated":
+                        raise AppError(
+                            "llm_truncated",
+                            "单段分析仍超过输出上限。请在模型配置提高「最大输出 / token」，或把这一段拆短后再试。",
+                        ) from None
+                    raise
+                parts.append(extracted.model_dump())
+                covered.extend(item["paragraph_id"] for item in current)
+                result["analysis_covered"] = covered
+                self.save(result, f"analysis {len(parts)}")
         if len(parts) == 1:
             result["analysis"] = parts[0]
         else:
@@ -165,6 +190,27 @@ class AdaptationFlow:
             self.save(result, "outline")
         return {"result": result}
 
+    def _shot_groups(
+        self, events: list[dict[str, Any]], paragraphs: list[dict[str, Any]]
+    ) -> list[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
+        if len(events) > 1:
+            middle = len(events) // 2
+            return [
+                self._events_slice(events[:middle], paragraphs),
+                self._events_slice(events[middle:], paragraphs),
+            ]
+        if len(paragraphs) > 1:
+            middle = len(paragraphs) // 2
+            return [(events, paragraphs[:middle]), (events, paragraphs[middle:])]
+        return []
+
+    @staticmethod
+    def _events_slice(
+        events: list[dict[str, Any]], paragraphs: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        ids = {paragraph_id for event in events for paragraph_id in event["source_paragraph_ids"]}
+        return events, [item for item in paragraphs if item["paragraph_id"] in ids]
+
     def shots(self, state: FlowState) -> FlowState:
         result = dict(state["result"])
         batches = result.setdefault("shot_batches", {})
@@ -173,30 +219,58 @@ class AdaptationFlow:
             if scene_id in batches:
                 continue
             events = [
-                e for e in result["analysis"]["events"] if e["event_id"] in scene["event_ids"]
+                event
+                for event in result["analysis"]["events"]
+                if event["event_id"] in scene["event_ids"]
             ]
-            ids = {p for e in events for p in e["source_paragraph_ids"]}
-            previous = [shot for batch in batches.values() for shot in batch]
-            batch = self.call(
-                result,
-                ShotBatch,
-                "shots",
-                {
-                    "scene": scene,
-                    "events": events,
-                    "paragraphs": [p for p in result["paragraphs"] if p["paragraph_id"] in ids],
-                    "characters": result["analysis"]["characters"],
-                    "visual_profiles": self.document["visual_profiles"],
-                    "style": self.document["style"],
-                    "aspect_ratio": self.document["aspect_ratio"],
-                    "previous_shot": previous[-1] if previous else None,
-                    "instruction": f"全局order从{len(previous) + 1}开始。镜头ID以{scene_id}_开头。"
-                    "按叙事需要决定镜头数量，不凑数，提示词为视频语义草案。",
-                },
-            )
-            if not batch.shots:
-                raise AppError("empty_shots", "模型没有输出镜头，已保存此前结果。")
-            batches[scene_id] = [shot.model_dump() for shot in batch.shots]
+            ids = {paragraph_id for event in events for paragraph_id in event["source_paragraph_ids"]}
+            scene_paragraphs = [item for item in result["paragraphs"] if item["paragraph_id"] in ids]
+            queue = [(events, scene_paragraphs if events else list(result["paragraphs"]))]
+            collected: list[dict[str, Any]] = []
+            while queue:
+                current_events, current_paragraphs = queue.pop(0)
+                previous = [shot for batch in batches.values() for shot in batch]
+                previous.extend(collected)
+                try:
+                    batch = self.call(
+                        result,
+                        ShotBatch,
+                        "shots",
+                        {
+                            "scene": scene,
+                            "events": current_events,
+                            "paragraphs": current_paragraphs,
+                            "characters": result["analysis"]["characters"],
+                            "visual_profiles": self.document["visual_profiles"],
+                            "style": self.document["style"],
+                            "aspect_ratio": self.document["aspect_ratio"],
+                            "previous_shot": previous[-1] if previous else None,
+                            "instruction": (
+                                f"全局order从{len(previous) + 1}开始。镜头ID以{scene_id}_开头。"
+                                "只覆盖本次 events 与 paragraphs，不补写未提供的事件。"
+                                "按叙事需要决定镜头数量，不凑数，提示词为视频语义草案。"
+                            ),
+                        },
+                    )
+                except AppError as exc:
+                    smaller = (
+                        self._shot_groups(current_events, current_paragraphs)
+                        if exc.code == "llm_truncated"
+                        else []
+                    )
+                    if smaller:
+                        queue[:0] = smaller
+                        continue
+                    if exc.code == "llm_truncated":
+                        raise AppError(
+                            "llm_truncated",
+                            "这一场的镜头输出仍超过上限。请在模型配置提高「最大输出 / token」后再重试。",
+                        ) from None
+                    raise
+                if not batch.shots:
+                    raise AppError("empty_shots", "模型没有输出镜头，已保存此前结果。")
+                collected.extend(shot.model_dump() for shot in batch.shots)
+            batches[scene_id] = collected
             self.save(result, f"shots {scene_id}")
         result["shots"] = [shot for batch in batches.values() for shot in batch]
         self.save(result, "shots")
