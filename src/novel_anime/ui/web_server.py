@@ -169,16 +169,16 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
         return {"id": profile.profile_id}
     if action == "run":
         profiles = service.load_profiles()
-        profile = profiles.get(body.get("profile_id"))
-        if not profile:
+        selected = profiles.get(str(body.get("profile_id") or ""))
+        if not selected:
             raise AppError("invalid_input", "请先保存并选择模型配置。")
-        if not profile.get("enabled", True):
+        if not selected.get("enabled", True):
             raise AppError("model_disabled", "模型已关闭，请在设置中启用。")
-        if not profile.get("api_key_env") or not resolve_key(profile["api_key_env"]):
+        if not selected.get("api_key_env") or not resolve_key(selected["api_key_env"]):
             raise AppError("missing_api_key", "请在模型配置中填写 API Key 并保存设置。")
         ident = service.create_run(
             body["chapter_id"],
-            profile,
+            selected,
             body.get("style", "国风动画"),
             body.get("aspect_ratio", "16:9"),
             body.get("preference", ""),
