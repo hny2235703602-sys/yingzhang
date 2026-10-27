@@ -21,6 +21,10 @@ class Paused(Exception):
     pass
 
 
+class Stopped(Exception):
+    pass
+
+
 class Worker:
     """Single-run database claim with heartbeat; stale runs require explicit reconciliation."""
 
@@ -98,6 +102,8 @@ class Worker:
                     raise AppError("lease_lost", "任务租约已丢失，已停止后续调用。")
                 if row.status == "pause_requested":
                     raise Paused()
+                if row.status == "stop_requested":
+                    raise Stopped()
                 row.stage = stage
                 row.updated_at = now()
 
@@ -126,9 +132,22 @@ class Worker:
             with self.sessions.begin() as session:
                 row = session.get(RunRow, run_id)
                 if row and row.owner == self.owner:
-                    row.status = "review_required" if issues else "succeeded"
+                    if row.status == "stop_requested":
+                        raise Stopped()
+                    if row.status == "pause_requested":
+                        raise Paused()
+                    row.status = (
+                        "stage_complete"
+                        if (document.get("selected_stages") or [document.get("target_stage")])[-1]
+                        in {"analysis", "outline", "shots"}
+                        else "review_required"
+                        if issues
+                        else "succeeded"
+                    )
                     row.validation_issues = issues
                     row.updated_at = now()
+        except Stopped:
+            self.finish_error(run_id, "stopped", None)
         except Paused:
             self.finish_error(run_id, "paused", None)
         except AppError as exc:

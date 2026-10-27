@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
 
+import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from pydantic import BaseModel, ValidationError
 
@@ -261,12 +262,26 @@ class LLMClient:
                 else:
                     code, message = "llm_configuration", "模型、协议或请求配置不被服务支持。"
                 raise AppError(code, message) from None
-            except APIConnectionError:
+            except APIConnectionError as exc:
+                cause = exc.__cause__
+                category = (
+                    "连接建立失败"
+                    if isinstance(cause, httpx.ConnectError)
+                    else "响应读取中断"
+                    if isinstance(cause, (httpx.ReadError, httpx.RemoteProtocolError))
+                    else "网络连接异常"
+                )
+                logger.warning(
+                    "LLM connection failure category=%s cause=%s", category, type(cause).__name__
+                )
                 if retries[0] > 0:
                     retries[0] -= 1
                     time.sleep(random.uniform(0.1, 0.5))
                     continue
-                raise AppError("llm_connection", "无法连接模型服务。") from None
+                raise AppError(
+                    "llm_connection",
+                    category + "，已耗尽连接重试。当前请求用量未知；已保存结果可继续使用。",
+                ) from None
 
     @staticmethod
     def _retry_delay(exc: APIStatusError, attempt: int) -> float:

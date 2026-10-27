@@ -62,6 +62,11 @@ class AdaptationFlow:
     def call(self, result: dict[str, Any], schema: Any, stage: str, payload: dict[str, Any]) -> Any:
         self.boundary(stage)
         template = self._template(stage)
+        if stage == "shots":
+            template += (
+                "\n表达精炼，不重复背景剧情或冗长解释；"
+                "保留人物外貌、环境、动作、构图与连续性必要信息。"
+            )
         if not self._within_budget(schema, stage, payload):
             raise AppError(
                 "context_budget", "当前阶段内容超过保守上下文预算，请提高预算或缩短章节。"
@@ -71,6 +76,27 @@ class AdaptationFlow:
         return model
 
     def run(self, initial: dict[str, Any], saver: Any, run_id: str) -> dict[str, Any]:
+        target = self.document.get("target_stage")
+        if target:
+            if target not in {"analysis", "outline", "shots", "review"}:
+                raise AppError("invalid_input", "执行阶段无效。")
+            state = self.prepare({"result": initial})
+            stages = self.document.get("selected_stages") or [target]
+            from novel_anime.application.service import STAGES, digest
+
+            first = STAGES.index(target)
+            if list(STAGES[first : first + len(stages)]) != stages:
+                raise AppError("invalid_input", "执行步骤必须连续相邻。")
+            for index, stage in enumerate(stages):
+                result = getattr(self, stage)(state)["result"]
+                if index < len(stages) - 1:
+                    result["confirmed_stages"] = {
+                        **result.get("confirmed_stages", {}),
+                        stage: digest(result[stage]),
+                    }
+                self.save(result, stage)
+                state = {"result": result}
+            return dict(result)
         graph = StateGraph(FlowState)
         for name in ("prepare", "analysis", "outline", "shots", "review"):
             graph.add_node(name, getattr(self, name))
@@ -141,14 +167,15 @@ class AdaptationFlow:
                     )
                 except AppError as exc:
                     if exc.code == "llm_truncated" and len(current) > 1:
-                        # The whole chunk exceeded the output cap. Keep paragraph order and retry halves.
+                        # Preserve paragraph order when splitting truncated output.
                         middle = len(current) // 2
                         queue[:0] = [current[:middle], current[middle:]]
                         continue
                     if exc.code == "llm_truncated":
                         raise AppError(
                             "llm_truncated",
-                            "单段分析仍超过输出上限。请在模型配置提高「最大输出 / token」，或把这一段拆短后再试。",
+                            "单段分析仍超过输出上限。请在模型配置提高「最大输出 / token」，"
+                            "或把这一段拆短后再试。",
                         ) from None
                     raise
                 parts.append(extracted.model_dump())
@@ -214,6 +241,8 @@ class AdaptationFlow:
     def shots(self, state: FlowState) -> FlowState:
         result = dict(state["result"])
         batches = result.setdefault("shot_batches", {})
+        pending = result.setdefault("shot_pending", {})
+        partial = result.setdefault("shot_partial", {})
         for scene in result["outline"]["scenes"]:
             scene_id = scene["scene_id"]
             if scene_id in batches:
@@ -223,14 +252,44 @@ class AdaptationFlow:
                 for event in result["analysis"]["events"]
                 if event["event_id"] in scene["event_ids"]
             ]
-            ids = {paragraph_id for event in events for paragraph_id in event["source_paragraph_ids"]}
-            scene_paragraphs = [item for item in result["paragraphs"] if item["paragraph_id"] in ids]
-            queue = [(events, scene_paragraphs if events else list(result["paragraphs"]))]
-            collected: list[dict[str, Any]] = []
+            ids = {
+                paragraph_id for event in events for paragraph_id in event["source_paragraph_ids"]
+            }
+            scene_paragraphs = [
+                item for item in result["paragraphs"] if item["paragraph_id"] in ids
+            ]
+            queue = list(
+                pending.get(
+                    scene_id, [(events, scene_paragraphs if events else list(result["paragraphs"]))]
+                )
+            )
+            collected: list[dict[str, Any]] = list(partial.get(scene_id, []))
             while queue:
                 current_events, current_paragraphs = queue.pop(0)
                 previous = [shot for batch in batches.values() for shot in batch]
                 previous.extend(collected)
+                paragraph_ids = {p["paragraph_id"] for p in current_paragraphs}
+                characters = [
+                    person
+                    for person in result["analysis"]["characters"]
+                    if not person.get("source_paragraph_ids")
+                    or paragraph_ids.intersection(person["source_paragraph_ids"])
+                ]
+                character_ids = {person["character_id"] for person in characters}
+                previous_state = (
+                    {
+                        key: previous[-1].get(key)
+                        for key in (
+                            "shot_id",
+                            "scene_id",
+                            "character_ids",
+                            "end_state",
+                            "continuity_out",
+                        )
+                    }
+                    if previous
+                    else None
+                )
                 try:
                     batch = self.call(
                         result,
@@ -240,15 +299,29 @@ class AdaptationFlow:
                             "scene": scene,
                             "events": current_events,
                             "paragraphs": current_paragraphs,
-                            "characters": result["analysis"]["characters"],
-                            "visual_profiles": self.document["visual_profiles"],
+                            "characters": characters,
+                            "visual_profiles": [
+                                p
+                                for p in self.document["visual_profiles"]
+                                if p["character_id"] in character_ids
+                            ],
                             "style": self.document["style"],
                             "aspect_ratio": self.document["aspect_ratio"],
-                            "previous_shot": previous[-1] if previous else None,
+                            "previous_shot": previous_state,
+                            "appearance_history": {
+                                item["character_id"]: item["prompt"]
+                                for prior in previous
+                                for item in prior.get("character_prompts", [])
+                                if item.get("prompt")
+                            },
                             "instruction": (
                                 f"全局order从{len(previous) + 1}开始。镜头ID以{scene_id}_开头。"
                                 "只覆盖本次 events 与 paragraphs，不补写未提供的事件。"
                                 "按叙事需要决定镜头数量，不凑数，提示词为视频语义草案。"
+                                "character_prompts只填写首次出现或新增外观变化的人物，无变化为[]且character_prompt为空字符串；变化时输出该人物当前完整外观，"
+                                "只含体貌、发型、服装、配饰，禁止经历、关系、心理和剧情。"
+                                "character_prompt仅汇总本镜新增或变化外观，不重复未变外观；environment_prompt只描述环境外观、"
+                                "空间、材质、陈设与光照，不含人物或事件。三者不写全局画风和用途。"
                             ),
                         },
                     )
@@ -264,13 +337,20 @@ class AdaptationFlow:
                     if exc.code == "llm_truncated":
                         raise AppError(
                             "llm_truncated",
-                            "这一场的镜头输出仍超过上限。请在模型配置提高「最大输出 / token」后再重试。",
+                            "这一场的镜头输出仍超过上限。"
+                            "请在模型配置提高「最大输出 / token」后再重试。",
                         ) from None
                     raise
                 if not batch.shots:
                     raise AppError("empty_shots", "模型没有输出镜头，已保存此前结果。")
                 collected.extend(shot.model_dump() for shot in batch.shots)
+                partial[scene_id] = collected
+                pending[scene_id] = list(queue)
+                result["shots"] = [shot for batch in batches.values() for shot in batch] + collected
+                self.save(result, f"shots {scene_id}")
             batches[scene_id] = collected
+            partial.pop(scene_id, None)
+            pending.pop(scene_id, None)
             self.save(result, f"shots {scene_id}")
         result["shots"] = [shot for batch in batches.values() for shot in batch]
         self.save(result, "shots")

@@ -87,6 +87,25 @@ class CharacterImageRow(Base):
     created_at: Mapped[str]
 
 
+class ShotImageRow(Base):
+    __tablename__ = "shot_images"
+    asset_id: Mapped[str] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), index=True)
+    shot_id: Mapped[str]
+    source_hash: Mapped[str]
+    kind: Mapped[str] = mapped_column(default="composition")
+    subject_id: Mapped[str] = mapped_column(default="")
+    reference_assets: Mapped[list[str]] = mapped_column(JSON, default=list)
+    selected: Mapped[bool] = mapped_column(default=False)
+    filename: Mapped[str]
+    mime_type: Mapped[str]
+    prompt: Mapped[str]
+    model: Mapped[str]
+    width: Mapped[int]
+    height: Mapped[int]
+    created_at: Mapped[str] = mapped_column(default=now)
+
+
 class ResultVersionRow(Base):
     __tablename__ = "result_versions"
     __table_args__ = (UniqueConstraint("run_id", "revision"),)

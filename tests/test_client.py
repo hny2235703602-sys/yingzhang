@@ -365,3 +365,17 @@ def test_model_catalog_errors_are_safe(
         LLMClient(profile()).list_models()
     assert caught.value.code == code
     assert "secret-sentinel" not in str(caught.value)
+
+
+def test_connection_diagnostic_classifies_without_leaking_payload(monkeypatch, caplog):
+    def handler(request):
+        raise httpx.ReadError("secret-sentinel private novel content", request=request)
+
+    install(monkeypatch, handler)
+    caplog.set_level(logging.WARNING)
+    with pytest.raises(AppError) as caught:
+        LLMClient(profile(retries=0)).generate(Review, "test", {}, "review")
+    assert caught.value.code == "llm_connection"
+    assert "响应读取中断" in caught.value.message
+    assert "secret-sentinel" not in caplog.text + caught.value.message
+    assert "private novel content" not in caplog.text + caught.value.message

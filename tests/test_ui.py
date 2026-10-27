@@ -83,7 +83,7 @@ def test_submit_and_pause_use_real_service_without_worker(ui_service: StudioServ
     app.radio[0].set_value("文本任务").run()
     next(button for button in app.button if button.label == "暂停").click().run()
     assert_clean(app)
-    assert ui_service.list_runs(chapter)[0]["status"] == "pause_requested"
+    assert ui_service.list_runs(chapter)[0]["status"] == "paused"
 
 
 def test_fetch_and_select_model(ui_service: StudioService, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -302,9 +302,10 @@ button,input,select,textarea{font:inherit}button{touch-action:manipulation}butto
       <div class="nav-label">创作空间</div>
       <nav class="nav" aria-label="创作空间">
         <button type="button" class="active" data-nav="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l2.5 2"/></svg>首页</button>
-        <button type="button" data-nav="image"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.4" fill="currentColor" stroke="none"/><path d="M7 16l3.2-3.2 2.2 2.2L16 11l3 3.5"/></svg>文生图</button>
-        <button type="button" data-nav="text"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6h12M6 12h12M6 18h8"/></svg>文生文</button>
-        <button type="button" data-nav="video"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="6" width="12" height="12" rx="2"/><path d="M15.5 10.5 20 8v8l-4.5-2.5z"/></svg>文生视频</button>
+        <button type="button" data-nav="overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>总览</button>
+        <button type="button" data-nav="text"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6h12M6 12h12M6 18h8"/></svg>分镜拆解</button>
+        <button type="button" data-nav="image"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.4" fill="currentColor" stroke="none"/><path d="M7 16l3.2-3.2 2.2 2.2L16 11l3 3.5"/></svg>图像创作</button>
+        <button type="button" data-nav="video"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="6" width="12" height="12" rx="2"/><path d="M15.5 10.5 20 8v8l-4.5-2.5z"/></svg>视频制作</button>
       </nav>
       <div class="nav-split"></div>
       <div class="nav-label">设置</div>
@@ -316,7 +317,7 @@ button,input,select,textarea{font:inherit}button{touch-action:manipulation}butto
   <div class="sidebar-footer"><button class="btn" data-action="export">↓ 导出原型数据</button><p><span class="dot"></span>交互原型 · 浏览器存储<br>云端应用与 Windows 算力独立部署</p></div></aside>
   <main class="main">
     <header class="topbar"><div class="topbar-left"><button type="button" class="back hidden" id="back-novels" aria-label="返回作品库">←</button><div><div class="breadcrumb" id="breadcrumb">映章 / 创作空间</div><h1 id="page-title">首页</h1></div></div><div class="topbar-right"><span class="prototype-tag">交互原型 · 未连接 API</span><span class="avatar" aria-label="个人工作台">映</span></div></header>
-    <nav class="subnav hidden" id="text-tabs" aria-label="文生文页面">
+    <nav class="subnav hidden" id="text-tabs" aria-label="分镜拆解页面">
       <button type="button" class="active" data-text="source">章节原文</button>
       <button type="button" data-text="analysis">本章分析与角色资料</button>
       <button type="button" data-text="outline">改编大纲</button>
@@ -383,7 +384,7 @@ let data = fresh();
 let storageWarning = '';
 try { const raw = null; if (raw?.version === 2 && Array.isArray(raw.novels) && Array.isArray(raw.profiles)) data = {...fresh(),...raw}; } catch { storageWarning = '无法读取浏览器存储。本次修改仍可编辑，请导出备份。'; }
 let route='home', currentId=null, tab='source', chapterId=null, search='', filter='all', editingId=null, editDraft=null, dirty=false;
-const labels={home:'首页',text:'文生文',image:'文生图',video:'文生视频',models:'模型配置',prompts:'提示词配置'};
+const labels={home:'首页',overview:'总览',text:'分镜拆解',image:'图像创作',video:'视频制作',models:'模型配置',prompts:'提示词配置'};
 const current=()=>data.novels.find(n=>n.id===currentId);
 const chapter=()=>current()?.chapters.find(c=>c.id===chapterId);
 const notify=message=>{ $('toast').textContent=message; $('toast').classList.add('visible'); clearTimeout(notify.timer); notify.timer=setTimeout(()=>$('toast').classList.remove('visible'),3500); };
@@ -398,29 +399,32 @@ function empty(title,text,action=''){return `<div class="empty-state"><div class
 function button(text,action,primary=false){return `<button type="button" class="btn ${primary?'primary':''}" data-action="${action}">${text}</button>`;}
 function render(){
  document.querySelectorAll('[data-nav]').forEach(b=>{b.classList.toggle('active',b.dataset.nav===route);if(b.dataset.nav===route)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
+ const inOverview=['overview','image','video'].includes(route);
  const inBook=route==='text'&&current();
  $('page-title').textContent=inBook?current().title:labels[route];
- $('breadcrumb').textContent=inBook?'创作空间 / 文生文 / 作品':'映章 / '+(route==='models'||route==='prompts'?'设置':'创作空间');
- $('back-novels').classList.toggle('hidden',!inBook);
+ $('breadcrumb').textContent=inBook?'创作空间 / 分镜拆解 / 作品':'映章 / '+(route==='models'||route==='prompts'?'设置':'创作空间');
+ $('back-novels').classList.toggle('hidden',!inBook&&!(inOverview&&current()));
  $('text-tabs').classList.toggle('hidden',!inBook);
  document.querySelector('.main').classList.toggle('has-tabs',!!inBook);
- $('novel-shelf').classList.toggle('hidden',route!=='text'||!!inBook);
+ $('novel-shelf').classList.toggle('hidden',!['text','overview','image','video'].includes(route)||!!current());
  $('book-layout').classList.toggle('hidden',!inBook);
  $('page-note').classList.add('hidden');
- $('workspace').hidden=!!inBook||route==='text';
- if(inBook)renderBook();else if(route==='text')renderShelf();else if(route==='home')renderHome();else if(route==='models')renderModels();else if(route==='prompts')renderPrompts();else renderUnavailable();
+ $('workspace').hidden=!!inBook||route==='text'||(inOverview&&!current());
+ if(inBook)renderBook();else if(route==='text'||(inOverview&&!current()))renderShelf();else if(route==='home')renderHome();else if(route==='models')renderModels();else if(route==='prompts')renderPrompts();else renderUnavailable();
 }
 function renderHome(){
  const count=data.novels.reduce((a,n)=>a+n.chapters.length,0);
  $('workspace').innerHTML=`<section class="welcome"><div><div class="eyebrow">YOUR STORY, FRAME BY FRAME</div><h2>让故事，从这一章开始。</h2><p>整理章节、梳理剧情，让每一帧都有来处。</p><div class="actions">${button('进入作品库 →','library',true)}${button('新建作品','create')}</div></div><div class="welcome-art" aria-hidden="true"><div>文</div><span>→</span><div>映</div></div></section><div class="stats"><div><strong>${data.novels.length}</strong><span>部作品</span></div><div><strong>${count}</strong><span>章已保存</span></div><div><strong>${data.profiles.length}</strong><span>个模型配置</span></div><div><strong>未连接</strong><span>真实 API 与视频服务</span></div></div><section class="section-head"><div><h2>最近编辑</h2><p>当前浏览器中保存的作品</p></div>${button('查看全部 →','library')}</section><div class="recent-list">${data.novels.slice().sort((a,b)=>b.updated.localeCompare(a.updated)).slice(0,4).map(n=>`<button class="recent-item" data-open="${n.id}"><span class="mini-cover">${esc(n.title[0])}</span><span><b>${esc(n.title)}</b><small>${esc(n.style)} · ${n.chapters.length} 章</small></span><span class="recent-time">${new Date(n.updated).toLocaleDateString('zh-CN')}　→</span></button>`).join('')||empty('还没有作品','先创建一部作品，可以不上传封面。',button('创建第一部作品','create',true))}</div><div class="notice"><b>当前是交互原型</b><span>数据仅保存在此浏览器。模型请求与视频生成尚未接入云端应用，页面不会发送付费请求。</span></div>`;
 }
 function renderShelf(){
+ const readOnly=['image','video'].includes(route);
+ document.querySelector('.shelf-tools [data-action="create"]').hidden=readOnly;
  const items=data.novels.filter(n=>n.title.toLowerCase().includes(search.toLowerCase())&&(filter==='all'||n.style===filter));
  $('shelf-title').textContent=`作品库 · ${data.novels.length}`;
- $('covers').innerHTML=items.map(n=>`<article class="cover-card"><button class="cover" data-open="${n.id}" aria-label="打开作品 ${esc(n.title)}">${n.cover?`<img class="cover-img" alt="" src="${esc(n.cover)}">`:`<div class="cover-pattern" aria-hidden="true"><small>映章 · 原创故事</small><strong>${esc(n.title)}</strong><i>STORY TO FRAME</i></div>`}</button><div class="book-caption"><div><b>${esc(n.title)}</b><small>${esc(n.style)} · ${n.chapters.length} 章</small></div><button class="icon-btn" data-edit="${n.id}" aria-label="编辑 ${esc(n.title)}">•••</button></div></article>`).join('')+`<button class="cover-add" data-action="create"><span>＋</span><small>新建作品</small></button>`;
+ $('covers').innerHTML=items.map(n=>`<article class="cover-card"><button class="cover" data-open="${n.id}" aria-label="打开作品 ${esc(n.title)}">${n.cover?`<img class="cover-img" alt="" src="${esc(n.cover)}">`:`<div class="cover-pattern" aria-hidden="true"><small>映章 · 原创故事</small><strong>${esc(n.title)}</strong><i>STORY TO FRAME</i></div>`}</button><div class="book-caption"><div><b>${esc(n.title)}</b><small>${esc(n.style)} · ${n.chapters.length} 章</small></div>${readOnly?'':`<button class="icon-btn" data-edit="${n.id}" aria-label="编辑 ${esc(n.title)}">•••</button>`}</div></article>`).join('')+(readOnly?'':`<button class="cover-add" data-action="create"><span>＋</span><small>新建作品</small></button>`);
  $('no-matches').hidden=items.length>0||!data.novels.length;
 }
-function openBook(id){if(!leaveDraft())return;closeEditor();route='text';currentId=id;tab='source';chapterId=current()?.chapters[0]?.id||null;render();}
+function openBook(id){if(!leaveDraft())return;closeEditor();route=['overview','image','video'].includes(route)?route:'text';currentId=id;tab='source';chapterId=current()?.chapters[0]?.id||null;render();}
 function openEditor(id=null){if(!leaveDraft())return;editingId=id;editDraft=id?structuredClone(data.novels.find(n=>n.id===id)):{id:uid(),title:'',style:'国风动画',cover:'',characters:[],chapters:[],updated:new Date().toISOString()};dirty=false;
  $('drawer-title').textContent=id?'编辑作品':'新建作品';$('edit-title').value=editDraft.title;$('edit-style').value=editDraft.style;$('edit-cover').value='';$('delete-novel').classList.toggle('hidden',!id);$('create-hint').classList.add('hidden');showCover();renderCast(editDraft.characters);$('novel-drawer').hidden=false;requestAnimationFrame(()=>$('novel-drawer').classList.add('open'));$('edit-title').focus();
 }
@@ -454,10 +458,10 @@ function renderModels(){const p=data.activeProfile==='__new__'?{}:(data.profiles
 }
 function renderModelsNew(id){renderModels();}
 function renderPrompts(){const names={analysis:'本章分析',outline:'改编大纲',shots:'分镜与提示词',review:'结果复核'};$('workspace').innerHTML=`<div class="section-head"><div><div class="eyebrow">SETTINGS / PROMPTS</div><h2>保留创作偏好，也保留故事依据。</h2><p>按阶段维护提示词草案；修改不会自动覆盖已保存结果。</p></div>${badge('草案 v1')}</div><form id="prompt-form"><div class="prompt-grid">${Object.entries(names).map(([key,name],i)=>`<section class="panel"><h3><span class="step-number">0${i+1}</span>${name}</h3><label class="field"><span class="sr-only">${name}提示词</span><textarea id="prompt-${key}" rows="5" maxlength="20000" required>${esc(data.templates[key])}</textarea></label></section>`).join('')}</div><div class="actions"><button class="btn primary" type="submit">保存提示词草案</button><span class="muted">仅保存在浏览器，尚未接入实际生成流程。</span></div></form>`;$('prompt-form').addEventListener('submit',e=>{e.preventDefault();for(const key of Object.keys(names))data.templates[key]=$('prompt-'+key).value; if(persist())notify('提示词草案已保存。');});}
-function renderUnavailable(){const isVideo=route==='video';$('workspace').innerHTML=`<div class="panel">${empty(isVideo?'把分镜交给画面，还需要连接工作流。':'人物与场景，即将在这里成形。',isVideo?'Windows ComfyUI 尚未接入。后续会展示逐镜队列、执行进度、失败重试与输出视频。':'文生图功能尚未接入。后续用于角色参考、场景与关键帧素材。',button('查看模型配置','models'))}<div class="notice"><span>${isVideo?'视频任务与文本任务分开管理。提交中、未知、失败和已完成应分别显示。':'当前不提供图片生成按钮，避免把原型交互误认为真实模型调用。'}</span></div></div>`;}
+function renderUnavailable(){const isVideo=route==='video';$('workspace').innerHTML=`<div class="panel">${empty(isVideo?'把分镜交给画面，还需要连接工作流。':'人物与场景，即将在这里成形。',isVideo?'Windows ComfyUI 尚未接入。后续会展示逐镜队列、执行进度、失败重试与输出视频。':'图像创作功能尚未接入。后续用于角色参考、场景与关键帧素材。',button('查看模型配置','models'))}<div class="notice"><span>${isVideo?'视频任务与文本任务分开管理。提交中、未知、失败和已完成应分别显示。':'当前不提供图片生成按钮，避免把原型交互误认为真实模型调用。'}</span></div></div>`;}
 // Navigation and page-level actions use delegation to survive re-rendering.
 document.addEventListener('click',e=>{const nav=e.target.closest('[data-nav]');if(nav){go(nav.dataset.nav);return;}const b=e.target.closest('[data-action],[data-open],[data-edit],[data-text]');if(!b)return;if(b.dataset.open){openBook(b.dataset.open);return;}if(b.dataset.edit){openEditor(b.dataset.edit);return;}if(b.dataset.text){if(!leaveDraft())return;dirty=false;tab=b.dataset.text;renderBook();return;}const a=b.dataset.action;if(a==='library')go('text');else if(a==='create'){if(route!=='text'){if(!leaveDraft())return;closeEditor();route='text';currentId=null;render();}openEditor();}else if(a==='save-chapter')saveChapter();else if(a==='new-chapter'){if(leaveDraft()){dirty=false;chapterId=null;tab='source';renderBook();}}else if(a==='source'){if(leaveDraft()){dirty=false;tab=a;renderBook();}}else if(a==='models')go('models');else if(a==='export')exportData();});
-$('back-novels').addEventListener('click',()=>go('text'));
+$('back-novels').addEventListener('click',()=>go(['overview','image','video'].includes(route)?route:'text'));
 $('close-drawer').addEventListener('click',()=>{if(leaveDraft())closeEditor();});
 $('save-novel').addEventListener('click',()=>saveBook());$('delete-novel').addEventListener('click',()=>removeBook());
 ['edit-title','edit-style'].forEach(id=>$(id).addEventListener('input',()=>dirty=true));

@@ -126,6 +126,13 @@ class Outline(DomainModel):
     scenes: list[Scene] = Field(default_factory=list)
 
 
+class CharacterAppearancePrompt(DomainModel):
+    character_id: Identifier
+    prompt: NonEmpty = Field(
+        description="仅供生图的可见外观：年龄感、体型、五官、发型、服装、配饰；不含经历、关系、心理、剧情或画风"
+    )
+
+
 class Shot(DomainModel):
     shot_id: Identifier
     scene_id: Identifier
@@ -139,6 +146,12 @@ class Shot(DomainModel):
     shot_size: NonEmpty
     camera: NonEmpty
     composition: str = ""
+    character_prompt: str = ""
+    character_prompts: list[CharacterAppearancePrompt] = Field(
+        default_factory=list,
+        description="只填写首次出现或外观变化的人物及变化后的完整外观；无变化或无人物时为空列表",
+    )
+    environment_prompt: str = ""
     start_state: NonEmpty
     end_state: NonEmpty
     continuity_in: dict[str, str] = Field(default_factory=dict)

@@ -241,7 +241,9 @@ def test_truncated_analysis_splits_then_continues(monkeypatch: pytest.MonkeyPatc
         return fake_models()[stage], {"stage": stage}
 
     monkeypatch.setattr(LLMClient, "generate", generate)
-    document = InputDocument(work_id="work", title="章节", text="甲走进庭院。\n\n乙停下脚步。").model_dump()
+    document = InputDocument(
+        work_id="work", title="章节", text="甲走进庭院。\n\n乙停下脚步。"
+    ).model_dump()
     profile = ModelProfile(
         provider="local",
         protocol="chat_completions",
@@ -297,9 +299,7 @@ def test_truncated_shots_split_by_events(monkeypatch: pytest.MonkeyPatch) -> Non
         api_key_env="",
     )
     initial = {
-        "paragraphs": [
-            paragraph.model_dump() for paragraph in source
-        ]
+        "paragraphs": [paragraph.model_dump() for paragraph in source]
         + [{"paragraph_id": "P0002", "text": "门轴响了一声。"}],
         "analysis": analysis_data,
         "outline": outline_data,
@@ -354,3 +354,100 @@ def test_semantic_issues_require_review_instead_of_success(
     row = service.get_run(run_id)
     assert row["status"] == "review_required"
     assert row["validation_issues"] == ["SH001 依赖未生成的对白"]
+
+
+def test_scene_request_excludes_unrelated_people_and_verbose_previous_prompt(monkeypatch):
+    analysis, outline, shots, source = storyboard()
+    data = analysis.model_dump()
+    data["characters"].append(
+        {
+            "character_id": "unrelated",
+            "name": "远处角色",
+            "description": "x" * 3000,
+            "source_paragraph_ids": ["P9999"],
+        }
+    )
+    scene2 = {**outline.scenes[0].model_dump(), "scene_id": "SC002"}
+    previous = {**shots[0].model_dump(), "video_prompt": "x" * 6000}
+    document = InputDocument(work_id="work", title="章节", text="少年推门。").model_dump()
+    document["visual_profiles"] = [
+        {"character_id": "unrelated", "name": "其他角色", "appearance": "x" * 3000}
+    ]
+    initial = {
+        "paragraphs": [p.model_dump() for p in source],
+        "analysis": data,
+        "outline": {"scenes": [outline.scenes[0].model_dump(), scene2]},
+        "shot_batches": {"SC001": [previous]},
+    }
+
+    def generate(client, schema, system, payload, stage):
+        assert [p["character_id"] for p in payload["characters"]] == ["hero"]
+        assert payload["visual_profiles"] == []
+        assert "video_prompt" not in payload["previous_shot"]
+        return ShotBatch(
+            shots=[
+                shots[0].model_copy(update={"shot_id": "SC002_1", "scene_id": "SC002", "order": 2})
+            ]
+        ), {"stage": stage}
+
+    monkeypatch.setattr(LLMClient, "generate", generate)
+    flow = AdaptationFlow(
+        document,
+        ModelProfile(
+            provider="test",
+            protocol="chat_completions",
+            base_url="https://example.com/v1",
+            model="test",
+        ),
+        lambda *args: None,
+        lambda *args: None,
+    )
+    flow.shots({"result": initial})
+
+
+def test_subscene_success_is_saved_before_later_connection_failure(monkeypatch):
+    analysis, outline, shots, source = storyboard()
+    events = analysis.model_dump()["events"]
+    events.append({**events[0], "event_id": "EV002"})
+    scene = {**outline.scenes[0].model_dump(), "event_ids": ["EV001", "EV002"]}
+    initial = {
+        "paragraphs": [p.model_dump() for p in source],
+        "analysis": {**analysis.model_dump(), "events": events},
+        "outline": {"scenes": [scene]},
+    }
+    saved = []
+    calls = []
+
+    def generate(client, schema, system, payload, stage):
+        ids = [e["event_id"] for e in payload["events"]]
+        calls.append(ids)
+        if len(ids) > 1:
+            raise AppError("llm_truncated", "截断")
+        if ids == ["EV002"]:
+            raise AppError("llm_connection", "断连")
+        return ShotBatch(shots=shots), {"stage": stage}
+
+    monkeypatch.setattr(LLMClient, "generate", generate)
+    document = InputDocument(work_id="work", title="章节", text="少年推门。").model_dump()
+    profile = ModelProfile(
+        provider="test",
+        protocol="chat_completions",
+        base_url="https://example.com/v1",
+        model="test",
+    )
+    flow = AdaptationFlow(
+        document, profile, lambda result, stage: saved.append(deepcopy(result)), lambda *args: None
+    )
+    with pytest.raises(AppError):
+        flow.shots({"result": initial})
+    assert saved and len(saved[-1].get("shots", [])) == 1
+
+    def resumed(client, schema, system, payload, stage):
+        assert [e["event_id"] for e in payload["events"]] == ["EV002"]
+        return ShotBatch(shots=[shots[0].model_copy(update={"shot_id": "SH002", "order": 2})]), {
+            "stage": stage
+        }
+
+    monkeypatch.setattr(LLMClient, "generate", resumed)
+    result = flow.shots({"result": saved[-1]})["result"]
+    assert len(result["shots"]) == 2

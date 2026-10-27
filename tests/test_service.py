@@ -12,7 +12,7 @@ from novel_anime.application.service import StudioService
 from novel_anime.core.errors import AppError
 from novel_anime.core.settings import ROOT
 from novel_anime.domain.models import ModelProfile, VisualProfile
-from novel_anime.persistence.database import CharacterImageRow, ResultVersionRow, RunRow
+from novel_anime.persistence.database import ResultVersionRow, RunRow
 from novel_anime.workers.main import Worker
 
 
@@ -87,7 +87,9 @@ def test_visual_versions_are_immutable_and_work_scoped(service: StudioService) -
     assert service.list_visual_profiles(other) == []
 
 
-def test_character_image_adoption_versions_profile_and_protects_assets(service: StudioService) -> None:
+def test_character_image_adoption_versions_profile_and_protects_assets(
+    service: StudioService,
+) -> None:
     work = service.create_work("作品")
     profile = VisualProfile(character_id="hero", name="少年", appearance="黑发", costume="蓝袍")
     service.save_visual_profile(work, profile.model_dump())
@@ -200,6 +202,7 @@ def test_expired_lease_requires_explicit_retry(service: StudioService) -> None:
 def test_pause_pending_and_resume(service: StudioService) -> None:
     run_id = create_run(service)
     service.pause_run(run_id)
+    assert service.get_run(run_id)["status"] == "paused"
     worker = Worker()
     assert worker.claim() is None
     assert service.get_run(run_id)["status"] == "paused"
@@ -207,4 +210,12 @@ def test_pause_pending_and_resume(service: StudioService) -> None:
     assert worker.claim() == run_id
     service.pause_run(run_id)
     service.resume_run(run_id)
-    assert service.get_run(run_id)["status"] == "pause_requested"
+    assert service.get_run(run_id)["status"] == "running"
+
+
+def test_stop_unclaimed_task_needs_no_worker(service: StudioService) -> None:
+    run_id = create_run(service)
+    service.pause_run(run_id)
+    service.stop_run(run_id)
+    assert service.get_run(run_id)["status"] == "stopped"
+    assert Worker().claim() is None
