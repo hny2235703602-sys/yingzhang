@@ -52,6 +52,23 @@ class VisualProfile(DomainModel):
     version: int = Field(default=1, ge=1)
     origin: NonEmpty = "改编设定"
     reference: str = ""
+    reference_assets: list[Identifier] = Field(default_factory=list)
+
+
+class CharacterImageAsset(DomainModel):
+    asset_id: Identifier
+    work_id: Identifier
+    character_id: Identifier
+    costume_version: Identifier
+    purpose: Literal["primary", "side", "expression", "candidate"] = "candidate"
+    filename: NonEmpty
+    mime_type: Literal["image/png", "image/jpeg"]
+    size_bytes: int = Field(gt=0, le=10_000_000)
+    width: int = Field(gt=0, le=8192)
+    height: int = Field(gt=0, le=8192)
+    sha256: Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
+    profile_version: int = Field(ge=1)
+    created_at: NonEmpty
 
 
 class InputDocument(DomainModel):

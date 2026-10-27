@@ -68,6 +68,25 @@ class VisualRow(Base):
     data: Mapped[dict[str, Any]] = mapped_column(JSON)
 
 
+class CharacterImageRow(Base):
+    __tablename__ = "character_images"
+    __table_args__ = (UniqueConstraint("work_id", "character_id", "asset_id"),)
+    id: Mapped[str] = mapped_column(primary_key=True)
+    work_id: Mapped[str] = mapped_column(ForeignKey("works.id"))
+    character_id: Mapped[str]
+    asset_id: Mapped[str] = mapped_column(unique=True)
+    costume_version: Mapped[str]
+    purpose: Mapped[str]
+    filename: Mapped[str]
+    mime_type: Mapped[str]
+    size_bytes: Mapped[int]
+    width: Mapped[int]
+    height: Mapped[int]
+    sha256: Mapped[str]
+    profile_version: Mapped[int]
+    created_at: Mapped[str]
+
+
 class ResultVersionRow(Base):
     __tablename__ = "result_versions"
     __table_args__ = (UniqueConstraint("run_id", "revision"),)

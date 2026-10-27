@@ -286,7 +286,120 @@ class StudioService:
                 select(VisualRow).where(VisualRow.work_id == work_id).order_by(VisualRow.version)
             )
             latest = {row.character_id: row.data for row in rows}
-            return list(latest.values())
+            return [
+                {**data, "reference_assets": list(data.get("reference_assets", []))}
+                for data in latest.values()
+            ]
+
+    def list_character_images(
+        self, work_id: str, character_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        from novel_anime.persistence.database import CharacterImageRow
+
+        with self.sessions() as session:
+            query = select(CharacterImageRow).where(CharacterImageRow.work_id == work_id)
+            if character_id:
+                query = query.where(CharacterImageRow.character_id == character_id)
+            return [
+                as_dict(row)
+                for row in session.scalars(query.order_by(CharacterImageRow.created_at.desc()))
+            ]
+
+    def add_character_image(self, work_id: str, metadata: dict[str, Any]) -> None:
+        from novel_anime.domain.models import CharacterImageAsset
+        from novel_anime.persistence.database import CharacterImageRow
+
+        data = CharacterImageAsset(**metadata).model_dump()
+        if data["work_id"] != work_id:
+            raise AppError("invalid_input", "素材所属作品不一致。")
+        with self.sessions.begin() as session:
+            profile = session.scalar(
+                select(VisualRow).where(
+                    VisualRow.work_id == work_id,
+                    VisualRow.character_id == data["character_id"],
+                    VisualRow.version == data["profile_version"],
+                )
+            )
+            if profile is None:
+                raise AppError("not_found", "角色资料版本不存在，请刷新后重试。")
+            session.add(CharacterImageRow(id=uid(), **data))
+
+    def adopt_character_image(
+        self, work_id: str, asset_id: str, purpose: str, expected_profile_version: int
+    ) -> int:
+        from novel_anime.persistence.database import CharacterImageRow
+
+        if purpose not in {"primary", "side", "expression"}:
+            raise AppError("invalid_input", "参考素材用途不正确。")
+        with self.sessions.begin() as session:
+            asset = session.scalar(
+                select(CharacterImageRow).where(
+                    CharacterImageRow.work_id == work_id,
+                    CharacterImageRow.asset_id == asset_id,
+                )
+            )
+            if asset is None:
+                raise AppError("not_found", "未找到角色图片素材。")
+            previous = session.scalar(
+                select(VisualRow)
+                .where(VisualRow.work_id == work_id, VisualRow.character_id == asset.character_id)
+                .order_by(VisualRow.version.desc())
+            )
+            if previous is None or previous.version != expected_profile_version:
+                raise AppError("version_conflict", "角色资料已更新，请刷新后重新选择素材。")
+            next_data = dict(previous.data)
+            existing = list(previous.data.get("reference_assets", []))
+            if purpose == "primary":
+                prior_primary_ids = list(
+                    session.scalars(
+                        select(CharacterImageRow.asset_id).where(
+                            CharacterImageRow.work_id == work_id,
+                            CharacterImageRow.character_id == asset.character_id,
+                            CharacterImageRow.purpose == "primary",
+                        )
+                    )
+                )
+                existing = [item for item in existing if item not in prior_primary_ids]
+            if asset_id not in existing:
+                existing.append(asset_id)
+            new_version = previous.version + 1
+            next_data["version"] = new_version
+            next_data["reference_assets"] = sorted(set(existing + [asset_id]))
+            session.add(
+                VisualRow(
+                    id=uid(),
+                    work_id=work_id,
+                    character_id=asset.character_id,
+                    version=new_version,
+                    data=next_data,
+                )
+            )
+            if purpose == "primary" and existing:
+                session.query(CharacterImageRow).filter(
+                    CharacterImageRow.work_id == work_id,
+                    CharacterImageRow.character_id == asset.character_id,
+                    CharacterImageRow.asset_id.in_(existing),
+                    CharacterImageRow.purpose == "primary",
+                ).update({"purpose": "side"})
+            asset.purpose = purpose
+            asset.profile_version = new_version
+            return new_version
+
+    def delete_character_image(self, work_id: str, asset_id: str) -> None:
+        from novel_anime.persistence.database import CharacterImageRow
+
+        with self.sessions.begin() as session:
+            asset = session.scalar(
+                select(CharacterImageRow).where(
+                    CharacterImageRow.work_id == work_id,
+                    CharacterImageRow.asset_id == asset_id,
+                )
+            )
+            if asset is None:
+                raise AppError("not_found", "未找到角色图片素材。")
+            if asset.purpose != "candidate":
+                raise AppError("invalid_state", "已采用的参考素材不能删除，请先更新角色资料版本。")
+            session.delete(asset)
 
     def save_visual_profile(self, work_id: str, profile: dict[str, Any]) -> None:
         data = VisualProfile(**profile).model_dump()

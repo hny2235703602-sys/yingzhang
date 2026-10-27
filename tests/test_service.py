@@ -12,7 +12,7 @@ from novel_anime.application.service import StudioService
 from novel_anime.core.errors import AppError
 from novel_anime.core.settings import ROOT
 from novel_anime.domain.models import ModelProfile, VisualProfile
-from novel_anime.persistence.database import ResultVersionRow, RunRow
+from novel_anime.persistence.database import CharacterImageRow, ResultVersionRow, RunRow
 from novel_anime.workers.main import Worker
 
 
@@ -85,6 +85,51 @@ def test_visual_versions_are_immutable_and_work_scoped(service: StudioService) -
     service.save_visual_profile(work, newer.model_dump())
     assert service.list_visual_profiles(work) == [newer.model_dump()]
     assert service.list_visual_profiles(other) == []
+
+
+def test_character_image_adoption_versions_profile_and_protects_assets(service: StudioService) -> None:
+    work = service.create_work("作品")
+    profile = VisualProfile(character_id="hero", name="少年", appearance="黑发", costume="蓝袍")
+    service.save_visual_profile(work, profile.model_dump())
+    service.add_character_image(
+        work,
+        {
+            "asset_id": "asset_001",
+            "work_id": work,
+            "character_id": "hero",
+            "costume_version": "costume_01",
+            "purpose": "candidate",
+            "filename": "asset_001.png",
+            "mime_type": "image/png",
+            "size_bytes": 100,
+            "width": 64,
+            "height": 64,
+            "sha256": "a" * 64,
+            "profile_version": 1,
+            "created_at": "2026-10-27T00:00:00+00:00",
+        },
+    )
+    assert service.adopt_character_image(work, "asset_001", "primary", 1) == 2
+    current = service.list_visual_profiles(work)[0]
+    assert current["version"] == 2
+    assert current["reference_assets"] == ["asset_001"]
+    assert service.list_character_images(work)[0]["profile_version"] == 2
+    with pytest.raises(AppError) as caught:
+        service.delete_character_image(work, "asset_001")
+    assert caught.value.code == "invalid_state"
+    with pytest.raises(AppError) as conflict:
+        service.adopt_character_image(work, "asset_001", "side", 1)
+    assert conflict.value.code == "version_conflict"
+
+
+def test_character_image_records_are_work_scoped(service: StudioService) -> None:
+    first = service.create_work("第一部")
+    second = service.create_work("第二部")
+    profile = VisualProfile(character_id="hero", name="少年", appearance="黑发", costume="蓝袍")
+    service.save_visual_profile(first, profile.model_dump())
+    with pytest.raises(AppError) as caught:
+        service.adopt_character_image(second, "asset_missing", "primary", 1)
+    assert caught.value.code == "not_found"
 
 
 def test_shot_save_revision_and_archive(service: StudioService) -> None:
