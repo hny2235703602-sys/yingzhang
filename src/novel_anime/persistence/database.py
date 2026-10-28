@@ -87,6 +87,22 @@ class CharacterImageRow(Base):
     created_at: Mapped[str]
 
 
+class StudioImageRow(Base):
+    __tablename__ = "studio_images"
+    asset_id: Mapped[str] = mapped_column(primary_key=True)
+    filename: Mapped[str]
+    mime_type: Mapped[str]
+    width: Mapped[int]
+    height: Mapped[int]
+    purpose: Mapped[str]
+    positive_prompt: Mapped[str]
+    negative_prompt: Mapped[str]
+    prompt: Mapped[str]
+    model: Mapped[str]
+    reference_assets: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[str] = mapped_column(default=now)
+
+
 class ShotImageRow(Base):
     __tablename__ = "shot_images"
     asset_id: Mapped[str] = mapped_column(primary_key=True)
@@ -129,3 +145,24 @@ def make_engine(url: str | None = None) -> Any:
 
 def sessions() -> Any:
     return sessionmaker(make_engine(), expire_on_commit=False)
+
+
+class LibraryEntryRow(Base):
+    __tablename__ = "library_entries"
+    __table_args__ = (UniqueConstraint("work_id", "kind", "source_key"),)
+    id: Mapped[str] = mapped_column(primary_key=True)
+    work_id: Mapped[str] = mapped_column(ForeignKey("works.id"), index=True)
+    kind: Mapped[str]
+    source_key: Mapped[str]
+    chapter_id: Mapped[str]
+    created_at: Mapped[str] = mapped_column(default=now)
+    content: Mapped[dict[str, Any]] = mapped_column(JSON)
+
+
+class GalleryPersonRow(Base):
+    __tablename__ = "gallery_people"
+    __table_args__ = (UniqueConstraint("work_id", "name"),)
+    id: Mapped[str] = mapped_column(primary_key=True)
+    work_id: Mapped[str] = mapped_column(ForeignKey("works.id"), index=True)
+    name: Mapped[str]
+    created_at: Mapped[str] = mapped_column(default=now)

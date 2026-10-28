@@ -219,3 +219,66 @@ def test_video_config_rejects_bad_duration_or_ratio(service: StudioService):
         with pytest.raises(AppError):
             dispatch(service, "video-config", body)
     assert service.load_video_config() == {}
+
+
+def test_group_prompt_has_exact_timeline_and_separate_constraints():
+    prompt = build_prompt([_shot(1, 5), _shot(2, 5), _shot(3, 5)], {}, "照片质感，柔和环境光")
+    assert "0-5秒：" in prompt and "5-10秒：" in prompt and "10-15秒：" in prompt
+    assert prompt.index("照片质感") < prompt.index("0-5秒") < prompt.index("镜头要求：")
+    assert "角色不说话无台词" in prompt and "无背景音乐" in prompt
+    assert "额外人偶" in prompt
+
+
+def test_group_prompt_keeps_dialogue_instead_of_silencing_speakers():
+    prompt = build_prompt([_shot(1, 3.5, dialogue="少年：“到了。”")], {})
+    assert "0-3.5秒：" in prompt and "少年：“到了。”" in prompt
+    assert "角色不说话无台词" not in prompt
+    assert "不增加台词" in prompt
+
+
+def test_english_generation_is_explicit_cached_and_invalidates_on_source_change(
+    service: StudioService, monkeypatch
+):
+    from novel_anime.domain.video import EnglishVideoPrompt
+    from novel_anime.integrations.language_models.client import LLMClient
+
+    chapter = _run_with_script(service, [5])
+    service.save_profile(
+        ModelProfile(
+            provider="test",
+            protocol="chat_completions",
+            base_url="https://example.com/v1",
+            model="test",
+        ).model_dump()
+    )
+    calls = []
+
+    def generate(self, schema, system, payload, stage):
+        calls.append(payload)
+        assert "0-5秒：" in payload["chinese_prompt"]
+        return EnglishVideoPrompt(
+            integrated_multimodal_description="[Shot 1] 0-5s: A boy walks in a courtyard.",
+            overall_soundscape="Footsteps. No speech or dialogue.",
+            non_diegetic_music="None (no background music).",
+        ), {}
+
+    monkeypatch.setattr(LLMClient, "generate", generate)
+    assert service.video_plan(chapter)["groups"][0]["prompt_en"] == ""
+    assert not calls
+    response = dispatch(
+        service,
+        "video-prompt-english",
+        {
+            "chapter_id": chapter,
+            "group_id": "G001",
+            "profile_id": "online",
+        },
+    )
+    assert response["prompt_en"].startswith("integrated_multimodal_description: [Shot 1]")
+    assert "\n\noverall_soundscape: " in response["prompt_en"]
+    assert "\n\nnon_diegetic_music: " in response["prompt_en"]
+    assert service.video_plan(chapter)["groups"][0]["prompt_en"] == response["prompt_en"]
+    assert len(calls) == 1
+    dispatch(service, "prompts", {"category": "video", "template": "水墨风格"})
+    assert service.video_plan(chapter)["groups"][0]["prompt_en"] == ""
+    assert len(calls) == 1

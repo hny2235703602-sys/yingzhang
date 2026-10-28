@@ -741,3 +741,674 @@ def test_image_layers_upload_adopt_and_pass_actual_references(service, shot_stud
             "generate-shot-image",
             {**base, "kind": "character", "subject_id": "not-present"},
         )
+
+
+def test_manual_image_prompts_replace_automatic_content_and_persist(
+    service, shot_studio, monkeypatch
+):
+    from novel_anime.integrations.image_generation.client import ImageGenerationClient
+
+    _, run_id = shot_studio
+    source = service.shot_image_source(run_id, "s1")
+    captured = []
+
+    def generate(client, prompt, count, references=None):
+        captured.append((prompt, references))
+        return [(_png_1x1(), "image/png")]
+
+    monkeypatch.setattr(ImageGenerationClient, "generate", generate)
+    dispatch(
+        service,
+        "generate-shot-image",
+        {
+            "run_id": run_id,
+            "shot_id": "s1",
+            "source_hash": source["source_hash"],
+            "global_prompt": "水彩风格，用于影片分镜预览",
+            "positive_prompt": "  月光下的雪山，写实摄影  ",
+            "negative_prompt": "  水印、多余人物  ",
+            "reference_assets": [],
+        },
+    )
+    prompt, references = captured[0]
+    assert prompt == "月光下的雪山，写实摄影\n\n【反向提示词 · 请避免以下内容】\n水印、多余人物"
+    assert references is None
+    saved = service.shot_image_source(run_id, "s1")["images"]
+    assert saved[0]["prompt"] == prompt
+    assert saved[0]["reference_assets"] == []
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"positive_prompt": " "},
+        {"positive_prompt": 42},
+        {"positive_prompt": "x" * 20001},
+        {"negative_prompt": []},
+        {"negative_prompt": "x" * 10001},
+        {"positive_prompt": "使用图一的构图"},
+    ],
+)
+def test_manual_image_prompts_validate_before_calling_model(
+    service, shot_studio, monkeypatch, changes
+):
+    from novel_anime.integrations.image_generation.client import ImageGenerationClient
+
+    _, run_id = shot_studio
+    source = service.shot_image_source(run_id, "s1")
+    monkeypatch.setattr(
+        ImageGenerationClient, "generate", lambda *args, **kwargs: pytest.fail("invalid request")
+    )
+    with pytest.raises(AppError):
+        dispatch(
+            service,
+            "generate-shot-image",
+            {
+                "run_id": run_id,
+                "shot_id": "s1",
+                "source_hash": source["source_hash"],
+                "global_prompt": "水彩风格，用于影片分镜预览",
+                "positive_prompt": "雪山",
+                **changes,
+            },
+        )
+
+
+def test_manual_image_prompts_forward_optional_uploaded_reference(
+    service, shot_studio, monkeypatch
+):
+    from novel_anime.integrations.image_generation.client import ImageGenerationClient
+
+    _, run_id = shot_studio
+    source = service.shot_image_source(run_id, "s1")
+    body = {
+        "run_id": run_id,
+        "shot_id": "s1",
+        "source_hash": source["source_hash"],
+        "global_prompt": "水彩风格，用于影片分镜预览",
+    }
+    uploaded = dispatch(
+        service,
+        "upload-shot-image",
+        {
+            **body,
+            "positive_prompt": "",
+            "data_url": "data:image/png;base64," + base64.b64encode(_png_1x1()).decode(),
+        },
+    )["asset_ids"][0]
+    captured = []
+
+    def generate(client, prompt, count, references=None):
+        captured.append((prompt, references))
+        return [(_png_1x1(), "image/png")]
+
+    monkeypatch.setattr(ImageGenerationClient, "generate", generate)
+    dispatch(
+        service,
+        "generate-shot-image",
+        {
+            **body,
+            "positive_prompt": "参考图一的构图，月光下的雪山",
+            "negative_prompt": "水印",
+            "reference_assets": [uploaded],
+        },
+    )
+    assert captured[0][1] == [(_png_1x1(), "image/png")]
+    assert "参考图一的构图" in captured[0][0]
+    assert "第1张图片" in captured[0][0]
+    assert "水印" in captured[0][0]
+
+
+def test_library_prompt_snapshot_is_durable_and_idempotent(service, shot_studio):
+    from novel_anime.application.library import list_entries
+    from novel_anime.persistence.database import RunRow
+
+    chapter_id, run_id = shot_studio
+    work_id = service.get_chapter(chapter_id)["work_id"]
+    body = {"kind": "prompts", "work_id": work_id, "run_id": run_id, "revision": 1}
+    first = dispatch(service, "library-save", body)
+    assert first["existing"] is False
+    assert dispatch(service, "library-save", body) == {"id": first["id"], "existing": True}
+    with service.sessions.begin() as session:
+        run = session.get(RunRow, run_id)
+        result = dict(run.result)
+        script = dict(result["script"])
+        script["shots"] = [{**script["shots"][0], "action": "少年转身"}]
+        result["script"] = script
+        run.result = result
+        run.revision += 1
+    with pytest.raises(AppError, match="脚本版本已更新"):
+        dispatch(service, "library-save", body)
+    second = dispatch(service, "library-save", {**body, "revision": 2})
+    assert second["id"] != first["id"]
+    entries = list_entries(StudioService(), work_id)
+    assert len(entries) == 2
+    assert (
+        next(item for item in entries if item["id"] == first["id"])["content"]["script"]["shots"][
+            0
+        ]["action"]
+        == "少年抬头"
+    )
+    wrong_work = service.create_work("其他作品")
+    with pytest.raises(AppError):
+        dispatch(service, "library-save", {**body, "work_id": wrong_work, "revision": 2})
+    with pytest.raises(AppError):
+        dispatch(service, "library-remove", {"work_id": wrong_work, "id": first["id"]})
+    dispatch(service, "library-remove", {"work_id": work_id, "id": first["id"]})
+    assert len(list_entries(service, work_id)) == 1
+    assert service.get_run(run_id)["result"]["script"]["shots"][0]["action"] == "少年转身"
+
+
+def test_library_images_archive_files_and_separate_subjects(service, shot_studio, tmp_path):
+    from novel_anime.application.library import list_entries
+    from novel_anime.persistence.database import ShotImageRow
+
+    chapter_id, run_id = shot_studio
+    work_id = service.get_chapter(chapter_id)["work_id"]
+    asset_ids = []
+    for kind, subject in [("character", "hero"), ("character", "hero"), ("environment", "")]:
+        asset_id = dispatch(
+            service,
+            "upload-shot-image",
+            {
+                "run_id": run_id,
+                "shot_id": "s1",
+                "kind": kind,
+                "subject_id": subject,
+                "source_hash": service.shot_image_source(run_id, "s1")["source_hash"],
+                "global_prompt": "水彩风格，用于影片分镜预览",
+                "data_url": "data:image/png;base64," + base64.b64encode(_png_1x1()).decode(),
+            },
+        )["asset_ids"][0]
+        asset_ids.append(asset_id)
+        dispatch(
+            service,
+            "library-save",
+            {
+                "work_id": work_id,
+                "kind": "images",
+                "asset_id": asset_id,
+            },
+        )
+    entries = list_entries(service, work_id)
+    assert len(entries) == 3
+    assert len({item["content"]["group_key"] for item in entries}) == 2
+    assert {item["content"]["name"] for item in entries} == {"少年", "环境与场景"}
+    with service.sessions() as session:
+        original = session.get(ShotImageRow, asset_ids[0])
+        (tmp_path / "assets" / "shots" / original.filename).unlink()
+    for entry in entries:
+        archived = tmp_path / "assets" / "library_images" / Path(entry["content"]["url"]).name
+        assert archived.read_bytes() == _png_1x1()
+
+
+def test_library_video_validates_chapter_url_and_file(service, tmp_path):
+    from novel_anime.application.library import list_entries
+
+    work = service.create_work("视频归档")
+    chapter = service.save_chapter(work, "第一章", "正文", "")
+    other = service.create_work("别的作品")
+    body = {"kind": "videos", "work_id": work, "chapter_id": chapter, "title": "第一版"}
+    for url in ["javascript:alert(1)", "file:///tmp/a.mp4", "https://user:pass@host/a.mp4", ""]:
+        with pytest.raises(AppError):
+            dispatch(service, "library-save", {**body, "url": url})
+    with pytest.raises(AppError):
+        dispatch(service, "library-save", {**body, "work_id": other, "url": "https://host/a.mp4"})
+    raw = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 12
+    uploaded = dispatch(
+        service,
+        "library-save",
+        {
+            **body,
+            "data_url": "data:video/mp4;base64," + base64.b64encode(raw).decode(),
+        },
+    )
+    assert not uploaded["existing"]
+    archived = list_entries(service, work)[0]["content"]["url"]
+    assert (tmp_path / "assets" / "library_videos" / Path(archived).name).read_bytes() == raw
+    with pytest.raises(AppError):
+        dispatch(
+            service,
+            "library-save",
+            {
+                **body,
+                "data_url": "data:video/mp4;base64," + base64.b64encode(b"invalid file").decode(),
+            },
+        )
+    direct = dispatch(service, "library-save", {**body, "url": "https://host/a.mp4"})
+    assert not direct["existing"]
+    assert len(list_entries(StudioService(), work)) == 2
+
+
+def test_library_video_http_ranges_and_static_assets(service, tmp_path):
+    import threading
+    from http.server import ThreadingHTTPServer
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    from novel_anime.ui.web_server import Handler
+
+    raw = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 12
+    filename = "a" * 64 + ".mp4"
+    root = tmp_path / "assets" / "library_videos"
+    root.mkdir(parents=True)
+    (root / filename).write_bytes(raw)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    address = f"http://127.0.0.1:{server.server_port}"
+    try:
+        for asset in ["library.js", "library.css", "tables.js", "tables.css"]:
+            with urlopen(address + "/" + asset) as response:
+                assert response.status == 200
+                assert len(response.read()) > 100
+        url = address + "/assets/library-videos/" + filename
+        for header, expected in [("bytes=4-7", raw[4:8]), ("bytes=-4", raw[-4:])]:
+            with urlopen(Request(url, headers={"Range": header})) as response:
+                assert response.status == 206
+                assert response.read() == expected
+                assert response.headers["Accept-Ranges"] == "bytes"
+        with pytest.raises(HTTPError) as caught:
+            urlopen(Request(url, headers={"Range": "bytes=999-"}))
+        assert caught.value.code == 416
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_library_collects_independent_studio_images_into_named_work_rows(service, tmp_path):
+    from novel_anime.application.library import list_entries
+
+    work = service.create_work("独立图像收藏")
+    asset_id = dispatch(
+        service,
+        "studio-upload",
+        {
+            "data_url": "data:image/png;base64," + base64.b64encode(_png_1x1()).decode(),
+        },
+    )["asset_ids"][0]
+    body = {
+        "kind": "images",
+        "work_id": work,
+        "asset_id": asset_id,
+        "image_kind": "character",
+        "name": "宋游",
+    }
+    for name in ["", " ", "a" * 121]:
+        with pytest.raises(AppError):
+            dispatch(service, "library-save", {**body, "name": name})
+    collected = dispatch(service, "library-save", body)
+    assert not collected["existing"]
+    entry = list_entries(StudioService(), work)[0]
+    assert entry["chapter_id"] == ""
+    assert entry["content"]["name"] == "宋游"
+    assert entry["content"]["group_key"] == "character:宋游"
+    original = next((tmp_path / "assets" / "studio").iterdir())
+    original.unlink()
+    archived = tmp_path / "assets" / "library_images" / Path(entry["content"]["url"]).name
+    assert archived.read_bytes() == _png_1x1()
+
+
+def test_independent_image_studio_does_not_require_any_work_or_chapter(
+    service, monkeypatch, tmp_path
+):
+    from novel_anime.application.image_studio import list_images
+    from novel_anime.integrations.image_generation.client import ImageGenerationClient
+
+    dispatch(
+        service,
+        "image-profile",
+        {
+            "name": "测试生图",
+            "model": "illustrator",
+            "base_url": "https://images.example/v1",
+            "api_key": "test-image-key",
+            "timeout": 90,
+        },
+    )
+    captured = []
+
+    def generate(client, prompt, count, references=None):
+        captured.append((prompt, references))
+        return [(_png_1x1(), "image/png") for _ in range(count)]
+
+    monkeypatch.setattr(ImageGenerationClient, "generate", generate)
+    dispatch(
+        service,
+        "studio-generate",
+        {
+            "positive_prompt": "手写雪山月夜",
+            "negative_prompt": "水印",
+            "count": 2,
+            "reference_assets": [],
+        },
+    )
+    assert captured[0] == (
+        "手写雪山月夜\n\n【反向提示词 · 请避免以下内容】\n水印",
+        None,
+    )
+    rows = list_images(service)
+    assert len(rows) == 2
+    assert all(row["positive_prompt"] == "手写雪山月夜" for row in rows)
+    assert all(row["negative_prompt"] == "水印" for row in rows)
+    assert all(row["reference_assets"] == [] for row in rows)
+
+    reference_id = dispatch(
+        service,
+        "studio-upload",
+        {"data_url": "data:image/png;base64," + base64.b64encode(_png_1x1()).decode()},
+    )["asset_ids"][0]
+    remix = dispatch(
+        service,
+        "studio-generate",
+        {
+            "positive_prompt": "根据图一的颜色，绘制一轮明月",
+            "negative_prompt": "文字",
+            "reference_assets": [reference_id],
+        },
+    )
+    assert remix["asset_ids"]
+    assert "本次输入的第1张图片" in captured[-1][0]
+    assert captured[-1][1] == [(_png_1x1(), "image/png")]
+    assert len(list_images(service)) == 4
+    assert len(service.list_works()) == 0
+    assert list((tmp_path / "assets" / "studio").glob("*.png"))
+
+
+def test_independent_image_studio_rejects_missing_reference_or_prompt(service):
+    from novel_anime.application.image_studio import create_images
+
+    with pytest.raises(AppError):
+        create_images(service, {"positive_prompt": "图一的构图", "reference_assets": ["a" * 32]})
+    with pytest.raises(AppError):
+        create_images(service, {"positive_prompt": "  "})
+
+
+def test_library_prompt_groups_match_saved_shots_and_survive_config_changes(service, shot_studio):
+    from novel_anime.application.library import list_entries
+    from novel_anime.persistence.database import LibraryEntryRow, RunRow
+
+    chapter, run_id = shot_studio
+    work = service.get_chapter(chapter)["work_id"]
+    with service.sessions.begin() as session:
+        run = session.get(RunRow, run_id)
+        result = dict(run.result)
+        script = dict(result["script"])
+        base = script["shots"][0]
+        script["shots"] = [
+            {**base, "shot_id": f"s{index}", "order": index, "duration_seconds": seconds}
+            for index, seconds in [(1, 13), (2, 6), (3, 8)]
+        ]
+        result["script"] = script
+        result["shots"] = script["shots"]
+        run.result = result
+    service.save_video_config({"target_seconds": 15, "max_seconds": 20})
+    saved = dispatch(
+        service, "library-save", {"kind": "prompts", "work_id": work, "run_id": run_id}
+    )
+    groups = list_entries(service, work)[0]["content"]["groups"]
+    assert [(group["group_id"], group["shot_ids"]) for group in groups] == [
+        ("G001", ["s1", "s2"]),
+        ("G002", ["s3"]),
+    ]
+    assert "0-13秒" in groups[0]["prompt"]
+    assert "13-19秒" in groups[0]["prompt"]
+    assert [shot["shot_id"] for shot in groups[0]["shot_prompts"]] == ["s1", "s2"]
+    assert "少年抬头" in groups[0]["shot_prompts"][0]["prompt"]
+    service.save_video_config({"target_seconds": 5, "max_seconds": 5})
+    assert list_entries(StudioService(), work)[0]["content"]["groups"] == groups
+    # Collections saved before grouping was introduced still render from their own snapshot.
+    with service.sessions.begin() as session:
+        row = session.get(LibraryEntryRow, saved["id"])
+        content = dict(row.content)
+        content.pop("groups")
+        row.content = content
+    legacy_groups = list_entries(service, work)[0]["content"]["groups"]
+    assert [group["shot_ids"] for group in legacy_groups] == [["s1", "s2"], ["s3"]]
+
+
+def test_video_outputs_enter_archive_only_after_manual_chapter_selection(service):
+    from novel_anime.application.library import list_entries
+
+    work = service.create_work("手动视频归档")
+    chapter_one = service.save_chapter(work, "第一章", "雨落下。", "")
+    chapter_two = service.save_chapter(work, "第二章", "天色放晴。", "")
+
+    assert service.video_plan(chapter_one)["groups"] == []
+    assert list_entries(service, work) == []
+
+    dispatch(
+        service,
+        "library-save",
+        {
+            "work_id": work,
+            "kind": "videos",
+            "chapter_id": chapter_two,
+            "title": "第二章成片",
+            "url": "https://videos.example/second-chapter.mp4",
+        },
+    )
+    archived = list_entries(service, work)
+    assert len(archived) == 1
+    assert archived[0]["chapter_id"] == chapter_two
+    assert archived[0]["content"]["title"] == "第二章成片"
+
+
+def test_keyframe_prompt_describes_still_image_without_video_timing_or_dialogue():
+    from novel_anime.application.library import keyframe_prompt
+
+    prompt = keyframe_prompt(
+        {
+            "shot_id": "s1",
+            "shot_size": "近景",
+            "camera": "缓慢推进",
+            "duration_seconds": 9,
+            "setting": "月光下的竹林",
+            "frame": "人物在画面左侧，右侧留白",
+            "action": "少年抬手，竹林传来蝉鸣。",
+            "dialogue": "少年：别动！",
+            "character_ids": ["hero"],
+        },
+        [
+            {
+                "character_id": "hero",
+                "name": "宋游",
+                "appearance": "黑发束起",
+                "costume": "蓝色长袍",
+            },
+            {"character_id": "other", "name": "未出场人物"},
+        ],
+        "国风水彩",
+        "9:16",
+    )
+    for value in [
+        "起始关键帧",
+        "国风水彩",
+        "9:16",
+        "近景",
+        "月光下的竹林",
+        "画面左侧",
+        "宋游",
+        "黑发束起",
+        "蓝色长袍",
+        "定格瞬间",
+    ]:
+        assert value in prompt
+    for value in ["缓慢推进", "9 秒", "别动", "未出场人物", "蝉鸣", "。。"]:
+        assert value not in prompt
+
+
+def test_library_keyframe_prompts_are_saved_and_added_to_older_collections(service, shot_studio):
+    import copy
+
+    from novel_anime.application.library import list_entries
+    from novel_anime.persistence.database import LibraryEntryRow
+
+    chapter, run_id = shot_studio
+    work = service.get_chapter(chapter)["work_id"]
+    saved = dispatch(
+        service, "library-save", {"work_id": work, "kind": "prompts", "run_id": run_id}
+    )
+    with service.sessions() as session:
+        row = session.get(LibraryEntryRow, saved["id"])
+        stored = row.content["groups"][0]["shot_prompts"][0]["keyframe_prompt"]
+        assert "少年" in stored
+        assert "蓝色长袍" in stored
+    with service.sessions.begin() as session:
+        row = session.get(LibraryEntryRow, saved["id"])
+        content = copy.deepcopy(row.content)
+        del content["groups"][0]["shot_prompts"][0]["keyframe_prompt"]
+        row.content = content
+    old = list_entries(StudioService(), work)[0]["content"]["groups"][0]["shot_prompts"][0]
+    assert old["keyframe_prompt"] == stored
+    assert old["prompt"]
+
+
+def test_gallery_people_can_have_empty_rows_and_survive_removing_last_image(service):
+    from novel_anime.application.library import list_entries, list_people
+
+    work = service.create_work("人物空行")
+    other = service.create_work("其他作品")
+    person = dispatch(service, "gallery-person-create", {"work_id": work, "name": " 宋游 "})
+    second = dispatch(service, "gallery-person-create", {"work_id": work, "name": "阿梨"})
+    assert person["name"] == "宋游"
+    assert list_entries(service, work) == []
+    assert [row["id"] for row in list_people(StudioService(), work)] == [person["id"], second["id"]]
+    duplicate = dispatch(service, "gallery-person-create", {"work_id": work, "name": "宋游"})
+    assert duplicate["existing"] and duplicate["id"] == person["id"]
+    assert list_people(service, other) == []
+    for name in ["", " ", "a" * 121, None, 42]:
+        with pytest.raises(AppError):
+            dispatch(service, "gallery-person-create", {"work_id": work, "name": name})
+    with pytest.raises(AppError):
+        dispatch(service, "gallery-person-create", {"work_id": "missing", "name": "人物"})
+
+    asset = dispatch(service, "studio-upload", {
+        "data_url": "data:image/png;base64," + base64.b64encode(_png_1x1()).decode()
+    })["asset_ids"][0]
+    body = {"kind": "images", "work_id": work, "asset_id": asset,
+            "name": "宋游", "person_id": person["id"]}
+    with pytest.raises(AppError):
+        dispatch(service, "library-save", {**body, "work_id": other})
+    entry = dispatch(service, "library-save", body)
+    content = list_entries(service, work)[0]["content"]
+    assert content["person_id"] == person["id"]
+    assert content["group_key"] == "character:宋游"
+    dispatch(service, "library-remove", {"work_id": work, "id": entry["id"]})
+    assert len(list_people(StudioService(), work)) == 2
+    assert list_entries(service, work) == []
+
+
+def test_generation_history_keeps_eight_even_when_collected(service, monkeypatch, tmp_path):
+    from novel_anime.application.image_studio import image_asset, list_images
+    from novel_anime.application.library import list_entries
+    from novel_anime.integrations.image_generation.client import ImageGenerationClient
+    from novel_anime.persistence.database import StudioImageRow
+
+    service._save_config("image_profile", {"backend": "mflux", "model": "test"})
+    monkeypatch.setattr(ImageGenerationClient, "generate", lambda *args, **kwargs: [
+        (_png_1x1(), "image/png") for _ in range(args[2])
+    ])
+    work = service.create_work("图库副本")
+    reference = dispatch(service, "studio-upload", {
+        "data_url": "data:image/png;base64," + base64.b64encode(_png_1x1()).decode()
+    })["asset_ids"][0]
+    first = dispatch(service, "studio-generate", {"positive_prompt": "第一张"})["asset_ids"][0]
+    original, _ = image_asset(service, first)
+    dispatch(service, "library-save", {
+        "work_id": work, "kind": "images", "asset_id": first, "name": "宋游"
+    })
+    copied_reference = dispatch(service, "studio-reference", {"asset_id": first})["asset_ids"][0]
+    for index in range(1, 5):
+        dispatch(service, "studio-generate", {
+            "positive_prompt": f"第 {index} 批", "count": 3,
+            "reference_assets": [copied_reference]
+        })
+    all_rows = list_images(StudioService())
+    generated = [row for row in all_rows if row["purpose"] == "generated"]
+    assert len(generated) == 8
+    assert generated[0]["positive_prompt"] == "第 4 批"
+    assert [row["created_at"] for row in generated] == sorted(
+        [row["created_at"] for row in generated], reverse=True
+    )
+    assert first not in [row["asset_id"] for row in all_rows]
+    assert not original.exists()
+    with service.sessions() as session:
+        assert session.get(StudioImageRow, first) is None
+    with pytest.raises(AppError):
+        image_asset(service, first)
+    for ident in [reference, copied_reference]:
+        assert image_asset(service, ident)[0].read_bytes() == _png_1x1()
+    archived = tmp_path / "assets" / "library_images" / Path(
+        list_entries(StudioService(), work)[0]["content"]["url"]
+    ).name
+    assert archived.read_bytes() == _png_1x1()
+    assert len(list((tmp_path / "assets" / "studio").glob("*.png"))) == 10
+
+
+def test_gallery_migration_preserves_existing_person_groups(service):
+    from novel_anime.application.library import list_people
+    from novel_anime.persistence.database import LibraryEntryRow
+
+    work = service.create_work("旧图库")
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "migrations"))
+    command.downgrade(config, "0006")
+    with service.sessions.begin() as session:
+        for index, (name, kind) in enumerate([
+            ("宋游", "character"), ("宋游", "character"), ("阿梨", "character"),
+            ("竹林", "environment"),
+        ]):
+            session.add(LibraryEntryRow(
+                id=str(index), work_id=work, kind="images", source_key=str(index), chapter_id="",
+                created_at=f"2026-10-28T00:00:0{index}+00:00",
+                content={"name": name, "image_kind": kind},
+            ))
+    command.upgrade(config, "head")
+    assert [person["name"] for person in list_people(service, work)] == ["宋游", "阿梨"]
+
+
+def test_gallery_person_http_endpoint(service):
+    import json
+    import threading
+    from http.server import ThreadingHTTPServer
+    from urllib.request import Request, urlopen
+
+    from novel_anime.ui.web_server import Handler
+
+    work = service.create_work("图库接口")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        with urlopen(Request(
+            base + "/api/gallery-person-create",
+            data=json.dumps({"work_id": work, "name": "宋游"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )) as response:
+            person = json.loads(response.read())
+        with urlopen(base + "/api/gallery-people/" + work) as response:
+            assert json.loads(response.read())[0]["id"] == person["id"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_reference_jpeg_allows_trailing_metadata(service):
+    from novel_anime.application.image_studio import image_asset
+    from novel_anime.ui.web_server import image_dimensions
+
+    # JFIF/SOF dimensions followed by an end marker and exporter metadata.
+    jpeg = (b'\xff\xd8\xff\xe0\x00\x04JF'
+            b'\xff\xc0\x00\x0b\x08\x00\x02\x00\x03\x01\x01\x11\x00'
+            b'\xff\xd9' + b'exporter metadata')
+    assert image_dimensions(jpeg, 'image/jpeg') == (3, 2)
+    uploaded = dispatch(service, 'studio-upload', {
+        'data_url': 'data:image/jpeg;base64,' + base64.b64encode(jpeg).decode()
+    })
+    assert image_asset(service, uploaded['asset_ids'][0])[0].read_bytes() == jpeg
+    with pytest.raises(ValueError):
+        image_dimensions(jpeg.replace(b'\xff\xd9', b''), 'image/jpeg')

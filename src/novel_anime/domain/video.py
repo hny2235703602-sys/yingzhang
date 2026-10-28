@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 VIDEO_TARGET_SECONDS = 15.0
 VIDEO_MAX_SECONDS = 20.0
 # Wan2.2 TI2V-5B 官方工作流按 24 FPS 输出。
@@ -137,14 +139,82 @@ def shot_prompt(shot: dict[str, Any], names: dict[str, str]) -> str:
     return text + "。"
 
 
+class EnglishVideoPrompt(BaseModel):
+    integrated_multimodal_description: str = Field(min_length=1)
+    overall_soundscape: str = Field(min_length=1)
+    non_diegetic_music: str = Field(min_length=1)
+
+    def render(self) -> str:
+        return "\n\n".join(f"{key}: {value}" for key, value in self.model_dump().items())
+
+
+VIDEO_TRANSLATION_INSTRUCTION = """将给定中文视频整组提示词忠实转换成英文视频提示词。
+integrated_multimodal_description 按 [Shot 1]、[Shot 2] 顺序，明确每镜起止秒数、
+场景质感、角色外观/比例/道具、画面动作、景别与运镜和所有物品限制。
+保留 <Picture N> 等参考图标记，不添加输入中没有的角色、物品、对白、运镜或配乐。
+真实对白才使用声音身份 (S1) 等以及 <d>[语言] 原台词</d>，原台词保留原语言与原文，
+旁白、心声和画外音保持其声音类型，不驱动画面中角色口型。
+禁止把中文对白改成角色说英语；无台词就明确 no speech or dialogue，绝不编造配音。
+overall_soundscape 只描述画面内动作/环境音及输入要求；
+non_diegetic_music 输入没有明确指定配乐时必须为 None (no background music)。
+三项内容都用英文写（人名、参考图标记与原台词除外）。保留所有否定限制与时间顺序。
+"""
+
+
 def build_prompt(shots: Sequence[dict[str, Any]], names: dict[str, str], style: str = "") -> str:
-    """整组提示词：按顺序描述每一镜，用「紧接着」交代时间推进。"""
-    lines = [shot_prompt(shot, names) for shot in shots]
-    text = "紧接着，".join(lines) if len(lines) > 1 else (lines[0] if lines else "")
-    style_text = style.strip()
-    if style_text:
-        text = f"{text}\n风格与限制：{style_text}"
-    return text
+    """场景角色、时间轴、镜头限制与声音分别成段，内容仅取自脚本。"""
+    settings = list(
+        dict.fromkeys(str(s.get("setting") or "").strip().rstrip("。；，") for s in shots)
+    )
+    people = list(
+        dict.fromkeys(
+            names.get(str(key), str(key)) for shot in shots for key in shot.get("character_ids", [])
+        )
+    )
+    intro = "。".join(
+        value for value in [style.strip().rstrip("。"), "、".join(filter(None, settings))] if value
+    )
+    lines = [intro + "。"] if intro else []
+    if people:
+        lines.append(
+            f"角色是{'、'.join(people)}，人物外观、服装、体型比例与参考图保持一致，道具在动作中连续一致。"
+        )
+    timeline = []
+    cameras = []
+    cursor = 0.0
+    for shot in shots:
+        end = round(cursor + float(shot.get("duration_seconds") or 0), 3)
+        action = _clean([str(shot.get("frame") or ""), str(shot.get("action") or "")])
+        camera = _clean([str(shot.get("shot_size") or ""), str(shot.get("camera") or "")])
+        if camera:
+            cameras.append(camera)
+        dialogue = str(shot.get("dialogue") or "").strip()
+        details = [
+            action,
+            f"镜头：{camera}" if camera else "",
+            f"台词：{dialogue}" if dialogue else "",
+        ]
+        body = "；".join(filter(None, details))
+        ending = "" if body.endswith(("。", "！", "？", "”", "!", "?")) else "。"
+        timeline.append(f"{cursor:g}-{end:g}秒：{body}{ending}")
+        cursor = end
+    lines.append("\n".join(timeline))
+    camera_rules = "；".join(dict.fromkeys(cameras))
+    lines.append(
+        (f"镜头要求：{camera_rules}，严格遵守各时间段的景别与运镜。" if camera_rules else "")
+        + "场景物品仅限分镜画面中已描述的物品与角色，不添加无关人物、玩偶、玩具或额外人偶；"
+        + "不出现字幕、文字或水印。"
+    )
+    sound = "音效仅限与动作、碰撞及环境对应的声音"
+    if any(str(shot.get("dialogue") or "").strip() for shot in shots):
+        sound += (
+            "，台词仅使用上方分镜原文；人物对白同步口型，"
+            "旁白、心声与画外音不驱动画面中角色口型；不增加台词或旁白"
+        )
+    else:
+        sound += "，角色不说话无台词"
+    lines.append(sound + "，无背景音乐。")
+    return "\n\n".join(filter(None, lines))
 
 
 def workflow_preset(aspect_ratio: str = "16:9") -> dict[str, Any]:
@@ -194,7 +264,13 @@ def compile_plan(
     target = float(config.get("target_seconds") or VIDEO_TARGET_SECONDS)
     max_seconds = float(config.get("max_seconds") or VIDEO_MAX_SECONDS)
     names = {
-        str(person.get("character_id")): str(person.get("name") or person.get("character_id"))
+        str(person.get("character_id")): _clean(
+            [
+                str(person.get("name") or person.get("character_id")),
+                str(person.get("appearance") or ""),
+                str(person.get("costume") or ""),
+            ]
+        )
         for person in characters
     }
     preset = workflow_preset(str(config.get("aspect_ratio") or "16:9"))

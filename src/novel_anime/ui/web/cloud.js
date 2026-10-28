@@ -2,7 +2,7 @@
 /* Cloud adapter: reuse the approved layout, persist via the existing business service. */
 let cloudBusy=false;
 async function api(path,body){const r=await fetch('/api/'+path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});const value=await r.json();if(!r.ok)throw Error(value.error||'云端请求失败');return value;}
-async function refreshCloud(){const state=await api('state');data.novels=state.novels;data.profiles=state.profiles;data.image_profile=state.image_profile||{};if(state.templates)data.templates=state.templates;data.media_templates=state.media_templates||{};if(!data.profiles.some(p=>p.id===data.activeProfile))data.activeProfile=data.profiles[0]?.id||'';}
+async function refreshCloud(){const state=await api('state');data.novels=state.novels;data.profiles=state.profiles;data.image_profile=state.image_profile||{};if(state.templates)data.templates=state.templates;data.media_templates=state.media_templates||{};if(state.default_profile_id&&data.profiles.some(p=>p.id===state.default_profile_id&&p.enabled!==false))data.activeProfile=state.default_profile_id;else if(!data.profiles.some(p=>p.id===data.activeProfile&&p.enabled!==false))data.activeProfile=data.profiles.find(p=>p.enabled!==false)?.id||'';}
 window.persist = function (){return true;}
 async function guarded(action){if(cloudBusy)return;cloudBusy=true;try{await action();}catch(e){notify(e.message||'操作失败，请重试。');}finally{cloudBusy=false;}}
 window.saveBook = async function (){return guarded(async()=>{if(!editDraft)return;const title=$('edit-title').value.trim();if(!title){notify('请填写作品名称。');return;}await api('work',{id:editingId,title,style:$('edit-style').value,cover:editDraft.cover});await refreshCloud();closeEditor();renderShelf();notify('作品已保存到云端。');});}
@@ -17,11 +17,11 @@ window.renderHome = function (){originalRenderHome();cloudCopy($('workspace'));}
 window.render = function (){
  if($('settings-tabs'))$('settings-tabs').classList.add('hidden');
  originalRender();cloudCopy();
- if(current()&&['overview','image','video'].includes(route)){
+ if(route==='image'){renderImageStudio();return;}
+ if(current()&&['overview','video'].includes(route)){
   $('page-title').textContent=current().title;
   $('breadcrumb').textContent='创作空间 / '+labels[route]+' / 作品';
   if(route==='overview')renderOverview();
-  else if(route==='image')renderShotImages();
   else renderVideoPlan();
  }
 };
@@ -66,21 +66,21 @@ async function renderVideoPlan(){
  if(!chapters.some(item=>item.id===chapterId))chapterId=chapters[0]?.id||null;
  const selectedChapter=chapterId;
  const active=()=>route==='video'&&currentId===work.id&&chapterId===selectedChapter&&request===videoRequest;
- $('workspace').innerHTML=`<div class="section-head"><div><div class="eyebrow">VIDEO PROMPTS</div><h2>视频提示词</h2><p>按目标时长把相邻分镜拼成一组，再编译成 ComfyUI 可直接粘贴的提示词与参数。</p></div><span class="badge">Wan2.2 TI2V-5B</span></div><div class="chapter-bar"><label>当前章节<select id="video-chapter">${chapters.length?chapters.map(item=>`<option value="${esc(item.id)}" ${item.id===selectedChapter?'selected':''}>${esc(item.title)}</option>`).join(''):'<option value="">暂无章节</option>'}</select></label><button class="btn" type="button" id="video-refresh">刷新分镜与参数</button></div><div id="video-plan" aria-live="polite"><p class="muted">正在读取本章分镜…</p></div>`;
+ $('workspace').innerHTML=`<div class="section-head"><div><div class="eyebrow">VIDEO PROMPTS</div><h2>视频提示词</h2><p>按目标时长把相邻分镜拼成一组，再编译成 ComfyUI 可直接粘贴的提示词与参数。</p></div><span class="badge">Wan2.2 TI2V-5B</span></div><div class="chapter-bar"><label>当前章节<select id="video-chapter">${chapters.length?chapters.map(item=>`<option value="${esc(item.id)}" ${item.id===selectedChapter?'selected':''}>${esc(item.title)}</option>`).join(''):'<option value="">暂无章节</option>'}</select></label><button class="btn primary" type="button" id="archive-video">保存到视频档案</button></div><div id="video-plan" aria-live="polite"><p class="muted">正在读取本章分镜…</p></div>`;
  $('video-chapter').onchange=e=>{chapterId=e.target.value;renderVideoPlan();};
- $('video-refresh').onclick=()=>guarded(async()=>{await refreshCloud();if(active())renderVideoPlan();});
- if(!selectedChapter){$('video-plan').innerHTML=empty('作品还没有章节','请先保存章节并生成故事脚本。');return;}
+ $('archive-video').onclick=()=>window.openVideoArchiveSave(work.id);
+ if(!selectedChapter){$('video-plan').innerHTML=emptyTable(['段','时长 / 帧数','覆盖分镜','首帧'],'作品还没有章节','请先保存章节并生成故事脚本。');return;}
  try{
   const plan=await api('video/'+selectedChapter);if(!active())return;
-  if(!plan.groups.length){$('video-plan').innerHTML=empty('本章还没有分镜','请先在故事脚本中生成脚本，再回来编译视频提示词。');return;}
+  if(!plan.groups.length){$('video-plan').innerHTML=emptyTable(['段','时长 / 帧数','覆盖分镜','首帧'],'本章还没有分镜','请先在故事脚本中生成脚本，再回来编译视频提示词。');return;}
   const preset=plan.preset||{};
   const groupCard=group=>{
    const passes=group.passes.map(item=>`<tr><td>${item.index}</td><td>${item.seconds} 秒 / ${item.frames} 帧</td><td>${esc(item.shot_ids.join('、'))}</td><td>${item.continuation?'接上一段末帧':'首帧来自分镜图'}</td></tr>`).join('');
-   return `<section class="panel" style="margin-bottom:20px"><div class="section-head"><div><h3>${esc(group.group_id)} · ${group.seconds} 秒 · ${group.shot_ids.length} 个分镜</h3><p class="muted">分镜：${esc(group.shot_ids.join('、'))} · 合计 ${group.frames} 帧（${preset.fps||24} fps）</p></div>${group.seconds>plan.target_seconds?badge('超出目标时长 '+plan.target_seconds+' 秒'):badge('符合目标时长')}</div><h4>整组提示词</h4><label class="field"><textarea rows="6" readonly>${esc(group.prompt)}</textarea></label><div class="actions"><button class="btn" type="button" data-copy-prompt="${esc(group.group_id)}">复制整组提示词</button></div><h4>分段生成</h4><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th scope="col">段</th><th scope="col">时长 / 帧数</th><th scope="col">覆盖分镜</th><th scope="col">首帧</th></tr></thead><tbody>${passes}</tbody></table></div>${group.passes.map(item=>`<details style="margin-top:10px"><summary class="muted">第 ${item.index} 段提示词 · ${item.seconds} 秒 / ${item.frames} 帧</summary><label class="field"><textarea rows="4" readonly>${esc(item.prompt)}</textarea></label><div class="actions"><button class="btn" type="button" data-copy-pass="${esc(group.group_id)}-${item.index}">复制第 ${item.index} 段</button></div></details>`).join('')}</section>`;
+   return `<section class="panel" style="margin-bottom:20px"><div class="section-head"><div><h3>${esc(group.group_id)} · ${group.seconds} 秒 · ${group.shot_ids.length} 个分镜</h3><p class="muted">分镜：${esc(group.shot_ids.join('、'))} · 合计 ${group.frames} 帧（${preset.fps||24} fps）</p></div>${group.seconds>plan.target_seconds?badge('超出目标时长 '+plan.target_seconds+' 秒'):badge('符合目标时长')}</div><h4>整组提示词</h4><div class="video-prompt-columns"><div><label class="field">中文提示词<textarea rows="18" readonly>${esc(group.prompt)}</textarea></label><button class="btn" type="button" data-copy-prompt="${esc(group.group_id)}">复制中文提示词</button></div><div><label class="field">英文提示词<textarea rows="18" readonly placeholder="选择语言模型后，点击生成英文提示词。">${esc(group.prompt_en||'')}</textarea></label><div class="actions"><button class="btn" type="button" data-copy-prompt="${esc(group.group_id)}-en" ${group.prompt_en?'':'disabled'}>复制英文提示词</button><button class="btn primary" type="button" data-generate-english="${esc(group.group_id)}">${group.prompt_en?'重新生成英文':'生成英文提示词'}</button></div></div></div><h4>分段生成</h4><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th scope="col">段</th><th scope="col">时长 / 帧数</th><th scope="col">覆盖分镜</th><th scope="col">首帧</th></tr></thead><tbody>${passes}</tbody></table></div>${group.passes.map(item=>`<details style="margin-top:10px"><summary class="muted">第 ${item.index} 段提示词 · ${item.seconds} 秒 / ${item.frames} 帧</summary><label class="field"><textarea rows="4" readonly>${esc(item.prompt)}</textarea></label><div class="actions"><button class="btn" type="button" data-copy-pass="${esc(group.group_id)}-${item.index}">复制第 ${item.index} 段</button></div></details>`).join('')}</section>`;
   };
   const params=`<section class="panel"><h3>工作流参数 · ${esc(preset.name||'')}</h3><table style="width:100%;border-collapse:collapse"><tbody><tr><th scope="row">分辨率</th><td>${preset.width} × ${preset.height}</td></tr><tr><th scope="row">帧率</th><td>${preset.fps} fps，length 取 4n+1</td></tr><tr><th scope="row">单段帧数</th><td>${preset.frames}（约 ${Math.round((preset.frames||121)/(preset.fps||24)*100)/100} 秒）</td></tr><tr><th scope="row">采样</th><td>steps ${preset.sampler.steps} · cfg ${preset.sampler.cfg} · ${esc(preset.sampler.sampler_name)} / ${esc(preset.sampler.scheduler)} · shift ${preset.sampler.shift}</td></tr><tr><th scope="row">模型</th><td>${esc(preset.env.unet)}<br>${esc(preset.env.clip)}<br>${esc(preset.env.vae)}</td></tr><tr><th scope="row">输出</th><td>${esc(preset.output.format)} · ${esc(preset.output.codec)} · ${preset.output.fps} fps</td></tr></tbody></table><p class="muted">来源：<a href="${esc(preset.source)}" target="_blank" rel="noopener">ComfyUI 官方 Wan2.2 示例</a>。在 ComfyUI 里加载 image_to_video_wan22_5B.json，首帧接分镜图，把上面的提示词和帧数填进对应节点即可。</p><details style="margin-top:12px"><summary>负面提示词（官方默认）</summary><label class="field"><textarea rows="4" readonly>${esc(plan.negative)}</textarea></label></details></section>`;
   const settings=`<section class="panel"><h3>分组与画幅</h3><p class="muted">目标时长是每组的期望长度，不是硬上限；下一镜放进来会超过单组上限就先收组，放得下就整镜并入。</p><div class="field-row"><label class="field">目标时长（秒）<input id="video-target" type="number" min="5" max="60" step="1" value="${plan.target_seconds}"></label><label class="field">单组上限（秒）<input id="video-max" type="number" min="5" max="60" step="1" value="${plan.max_seconds}"></label><label class="field">画幅<select id="video-ratio">${['16:9','9:16','1:1'].map(r=>`<option value="${r}" ${r===plan.aspect_ratio?'selected':''}>${r}</option>`).join('')}</select></label></div><div class="actions"><button class="btn primary" type="button" id="video-save">保存分组与画幅</button><span class="muted">保存后重新编译，不创建视频任务。</span></div></section>`;
-  $('video-plan').innerHTML=`<p class="muted">分镜版本：${esc(plan.run.updated_at)} · 共 ${plan.groups.length} 组，目标 ${plan.target_seconds} 秒一组，最多 ${plan.max_seconds} 秒；单镜不拆分，凑不够就整镜并入。</p>${plan.groups.map(groupCard).join('')}${settings}${params}`;
+  $('video-plan').innerHTML=`<p class="muted">分镜版本：${esc(plan.run.updated_at)} · 共 ${plan.groups.length} 组，目标 ${plan.target_seconds} 秒一组，最多 ${plan.max_seconds} 秒；单镜不拆分，凑不够就整镜并入。</p><label class="field">英文提示词使用的语言模型<select id="video-language-model">${data.profiles.filter(p=>p.enabled!==false).map(p=>`<option value="${esc(p.id)}" ${p.id===data.activeProfile?'selected':''}>${esc(p.name)} · ${esc(p.model)}</option>`).join('')||'<option value="">请先在模型配置中添加语言模型</option>'}</select><small>点击生成时调用模型；刷新页面沿用已保存的英文结果。</small></label>${plan.groups.map(groupCard).join('')}${settings}${params}`;
   $('video-save').onclick=()=>guarded(async()=>{
    const target=Number($('video-target').value),ceiling=Number($('video-max').value);
    if(!(target>=5&&target<=60)||!(ceiling>=5&&ceiling<=60)){notify('目标时长与单组上限需在 5 到 60 秒之间。');return;}
@@ -89,87 +89,65 @@ async function renderVideoPlan(){
    if(active())renderVideoPlan();
    notify('分组与画幅已保存。');
   });
+  document.querySelectorAll('[data-generate-english]').forEach(button=>{button.onclick=()=>guarded(async()=>{
+   const profile=$('video-language-model').value;
+   if(!profile){notify('请先在模型配置中添加语言模型。');return;}
+   const label=button.textContent;button.disabled=true;button.textContent='正在生成英文…';
+   try{await api('video-prompt-english',{chapter_id:selectedChapter,group_id:button.dataset.generateEnglish,profile_id:profile});if(active())await renderVideoPlan();notify('英文提示词已生成并保存。');}
+   finally{button.disabled=false;button.textContent=label;}
+  });});
   const copy=async(text,note)=>{try{await navigator.clipboard.writeText(text);notify(note+'已复制。');}catch{notify('浏览器未允许复制，请手动选中文本。');}};
-  const texts={};plan.groups.forEach(group=>{texts[group.group_id]=group.prompt;group.passes.forEach(item=>{texts[group.group_id+'-'+item.index]=item.prompt;});});
+  const texts={};plan.groups.forEach(group=>{texts[group.group_id]=group.prompt;texts[group.group_id+'-en']=group.prompt_en||'';group.passes.forEach(item=>{texts[group.group_id+'-'+item.index]=item.prompt;});});
   document.querySelectorAll('[data-copy-prompt],[data-copy-pass]').forEach(button=>{button.onclick=()=>copy(texts[button.dataset.copyPrompt||button.dataset.copyPass]||'','提示词');});
  }catch(error){if(active())$('video-plan').innerHTML=empty('暂时无法编译视频提示词',error.message||'请稍后刷新。');}
 }
 let imageRequest=0;
-const chosenShots={},imageTargets={},imageReferenceSelections={};
-async function renderShotImages(){
- const work=current();if(!work)return;
- const request=++imageRequest,chapters=work.chapters||[];
- if(!chapters.some(item=>item.id===chapterId))chapterId=chapters[0]?.id||null;
- const selectedChapter=chapterId;
- const active=()=>route==='image'&&currentId===work.id&&chapterId===selectedChapter&&request===imageRequest;
- const globalPrompt=data.media_templates?.image||'';
+const studioDraft={positive:'',negative:'',count:1,references:[]};
+const studioAssetUrl=image=>'/assets/studio/'+encodeURIComponent(image.asset_id)+'.img';
+async function renderImageStudio(){
+ const request=++imageRequest,active=()=>route==='image'&&request===imageRequest;
  const configured=!!data.image_profile?.key_configured||data.image_profile?.backend==='mflux';
- $('workspace').innerHTML=`<div class="section-head"><div><div class="eyebrow">IMAGE STUDIO</div><h2>图像创作工作台</h2><p>先准备角色与环境，再用参考图生成完整镜头。每类图片独立保存、独立采用。</p></div>${badge(configured?'生图模型已配置':'请先配置生图模型',configured?'':'amber')}</div><div class="chapter-bar"><label>当前章节<select id="image-chapter">${chapters.length?chapters.map(item=>`<option value="${esc(item.id)}" ${item.id===selectedChapter?'selected':''}>${esc(item.title)}</option>`).join(''):'<option value="">暂无章节</option>'}</select></label><button class="btn" type="button" id="image-refresh">刷新分镜与配置</button></div><div id="image-studio" aria-live="polite"><p class="muted">正在读取章节分镜…</p></div>`;
- $('image-chapter').onchange=e=>{if(!leaveDraft()){e.target.value=selectedChapter||'';return;}dirty=false;chapterId=e.target.value;renderShotImages();};
- $('image-refresh').onclick=()=>{if(!leaveDraft())return;dirty=false;guarded(async()=>{await refreshCloud();if(active())renderShotImages();});};
- if(!selectedChapter){$('image-studio').innerHTML=empty('作品还没有章节','请先保存章节并生成分镜。');return;}
- try{
-  const overview=await api('overview/'+selectedChapter);if(!active())return;
-  if(!overview.shots.length){$('image-studio').innerHTML=empty('本章还没有分镜','请先在故事脚本中生成本章镜头。');return;}
-  const shotKey=work.id+':'+selectedChapter;
-  let shot=overview.shots.find(item=>item.shot_id===chosenShots[shotKey])||overview.shots[0];
-  const paint=()=>{
-   chosenShots[shotKey]=shot.shot_id;
-   const source=shot.image_source,subjects=source.subjects||[],targetKey=overview.run.id+':'+shot.shot_id;
-   const target=imageTargets[targetKey]||{kind:subjects.length?'character':'environment',subject_id:subjects[0]?.character_id||''};
-   if(target.kind==='character'&&!subjects.some(person=>person.character_id===target.subject_id))target.subject_id=subjects[0]?.character_id||'';
-   imageTargets[targetKey]=target;
-   const kind=target.kind,subjectId=kind==='character'?target.subject_id:'',person=subjects.find(item=>item.character_id===subjectId);
-   const label=kind==='character'?(person?.name||'角色')+' · 角色图':kind==='environment'?'环境图':'整体画面';
-   const targetId=targetKey+':'+kind+':'+subjectId;
-   const images=source.images.filter(image=>(image.kind||'composition')===kind&&(image.subject_id||'')===subjectId);
-   const eligible=source.images.filter(image=>kind==='composition'||image.kind===kind&&(kind!=='character'||image.subject_id===subjectId));
-   if(!imageReferenceSelections[targetId])imageReferenceSelections[targetId]=eligible.filter(image=>image.selected&&image.kind!=='composition').map(image=>image.asset_id);
-   const referenceIds=imageReferenceSelections[targetId].filter(id=>eligible.some(image=>image.asset_id===id));
-   imageReferenceSelections[targetId]=referenceIds;
-   const figureNames=['图一','图二','图三','图四','图五','图六'];
-   const assetUrl=image=>'/assets/shots/'+encodeURIComponent(image.asset_id)+'.img';
-   const role=image=>image.kind==='character'?((subjects.find(item=>item.character_id===image.subject_id)?.name||'角色')+' · 角色参考'):image.kind==='environment'?'环境参考':'构图参考';
-   const description=kind==='character'?person?.prompt||'':kind==='environment'?source.environment_prompt:[source.character_prompt,source.environment_prompt,source.shot_prompt].filter(Boolean).join('\n\n');
-   const card=image=>`<article class="panel" style="padding:14px"><a href="${assetUrl(image)}" target="_blank" rel="noopener"><img src="${assetUrl(image)}" alt="${esc(label)}" style="display:block;width:100%;height:240px;object-fit:contain;background:#f3f5ef;border-radius:8px"></a><p class="muted">${image.width} × ${image.height} · ${esc(image.model)}</p><div class="actions">${image.selected?badge('已采用'):`<button type="button" class="btn" data-adopt-image="${esc(image.asset_id)}">采用此图</button>`}</div><details style="margin-top:12px"><summary class="muted">生成记录 · ${image.reference_assets?.length||0} 张参考图</summary><p style="white-space:pre-wrap" class="muted">${esc(image.prompt)}</p></details></article>`;
-   $('image-studio').innerHTML=`<section class="panel"><label class="field">选择分镜<select id="image-shot">${overview.shots.map(item=>`<option value="${esc(item.shot_id)}" ${item.shot_id===shot.shot_id?'selected':''}>${item.order}. ${esc((item.frame||item.action||'').slice(0,18))}</option>`).join('')}</select></label><p class="muted">${esc(shot.action||'')} · ${esc(shot.shot_size||'')}</p><div class="actions" role="group" aria-label="图片类型" style="margin:20px 0">${[['character','① 角色图'],['environment','② 环境图'],['composition','③ 整体画面']].map(([value,name])=>`<button class="btn ${value===kind?'primary':''}" type="button" data-image-kind="${value}" aria-pressed="${value===kind}" ${value==='character'&&!subjects.length?'disabled':''}>${name}</button>`).join('')}</div>${kind==='character'?`<label class="field">选择角色<select id="image-subject">${subjects.map(item=>`<option value="${esc(item.character_id)}" ${item.character_id===subjectId?'selected':''}>${esc(item.name)}</option>`).join('')}</select></label>`:''}<h3>${esc(label)}</h3><p class="muted">${kind==='character'?'只生成当前角色的独立形象，保持发型、服装与配饰一致。':kind==='environment'?'只生成环境与陈设，不包含人物。':'依据分镜安排人物、动作和构图，可结合角色与环境参考图。'}</p><details><summary>查看${kind==='character'?'沿用后的角色外观':kind==='environment'?'环境描述':'镜头描述'}</summary><p style="white-space:pre-wrap">${esc(description)||'暂无描述，可上传参考图或填写补充要求。'}</p></details><section style="margin-top:24px"><div class="section-head"><div><h3>参考图 <small class="muted"><span id="reference-count">已选 ${referenceIds.length} / 6</span></small></h3><p>选中后按图一、图二编号，补充要求可直接使用编号。更改勾选后请核对编号。上传图片自动归入当前${kind==='character'?'角色':kind==='environment'?'环境':'构图'}参考。</p></div><label class="btn" style="cursor:pointer">＋ 上传参考图<input id="upload-layer-image" type="file" accept="image/png,image/jpeg" style="display:none"></label></div>${eligible.length?`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:12px">${eligible.map(image=>`<label style="padding:10px;border:1px solid ${referenceIds.includes(image.asset_id)?'#416f4e':'#dce4d7'};border-radius:10px;background:white"><img src="${assetUrl(image)}" alt="${esc(role(image))}" style="width:100%;height:100px;object-fit:contain;display:block"><b data-reference-label="${esc(image.asset_id)}" style="display:block;margin:6px 0">${referenceIds.includes(image.asset_id)?figureNames[referenceIds.indexOf(image.asset_id)]:'未选'}</b><span style="font-size:12px"><input type="checkbox" data-image-reference="${esc(image.asset_id)}" ${referenceIds.includes(image.asset_id)?'checked':''}> ${esc(role(image))}${image.selected?' · 已采用':''}</span></label>`).join('')}</div>`:empty('暂无参考图',kind==='composition'?'可先生成并采用角色图、环境图，或直接上传构图参考。':'可直接按描述生成，也可上传参考图。')}</section><label class="field" style="margin-top:24px">本次补充要求<textarea id="layer-extra" rows="3" maxlength="2000" placeholder="例如：保留图一的人脸和服装，使用图二的环境；人物调整为正面站姿。"></textarea></label><details><summary>全局风格与用途</summary><p style="white-space:pre-wrap">${esc(globalPrompt)}</p></details><div class="actions" style="margin-top:20px"><label>生成数量 <select id="layer-count"><option value="1">1 张</option><option value="2">2 张</option><option value="3">3 张</option><option value="4">4 张</option></select></label><button class="btn primary" type="button" id="generate-layer-image" ${configured?'':'disabled'}>生成${kind==='character'?'角色图':kind==='environment'?'环境图':'整体画面'}</button><span class="muted" id="layer-image-status" role="status">${configured?'仅生成当前类型，其余图片保留。':'请先配置生图模型。'}</span></div></section><section style="margin-top:24px"><h3>${esc(label)} · 图片版本</h3><p class="muted">${images.length} 张 · 采用版本会同步到总览对应位置。</p>${images.length?`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:18px">${images.map(card).join('')}</div>`:empty('尚无图片','生成或上传后，图片会保存在这里。')}</section>`;
-   const change=fn=>{if(!leaveDraft())return;dirty=false;fn();paint();};
-   $('image-shot').onchange=e=>change(()=>{shot=overview.shots.find(item=>item.shot_id===e.target.value);});
-   document.querySelectorAll('[data-image-kind]').forEach(button=>button.onclick=()=>change(()=>{target.kind=button.dataset.imageKind;}));
-   if($('image-subject'))$('image-subject').onchange=e=>change(()=>{target.subject_id=e.target.value;});
-   $('layer-extra').oninput=()=>{dirty=!!$('layer-extra').value;};
-   document.querySelectorAll('[data-image-reference]').forEach(input=>input.onchange=()=>{
-    const prior=imageReferenceSelections[targetId];
-    const values=input.checked?[...prior,input.dataset.imageReference]:prior.filter(id=>id!==input.dataset.imageReference);
-    if(values.length>6){input.checked=false;notify('最多选择 6 张参考图。');return;}
-    imageReferenceSelections[targetId]=values;
-    document.querySelectorAll('[data-reference-label]').forEach(label=>{const index=values.indexOf(label.dataset.referenceLabel);label.textContent=index>=0?figureNames[index]:'未选';});
-    $('reference-count').textContent=`已选 ${values.length} / 6`;
-    if($('layer-extra').value.trim())notify('参考图编号已更新，请核对补充要求中的图一、图二。');
-   });
-   const body=()=>({run_id:overview.run.id,shot_id:shot.shot_id,source_hash:source.source_hash,global_prompt:globalPrompt,kind,subject_id:subjectId,reference_assets:imageReferenceSelections[targetId],extra:$('layer-extra').value.trim(),count:Number($('layer-count').value)});
-   $('generate-layer-image').onclick=()=>guarded(async()=>{
-    const button=$('generate-layer-image'),note=$('layer-image-status');button.disabled=true;button.textContent='正在生成…';note.textContent='生成中，参考图与提示词已提交。';
-    try{const result=await api('generate-shot-image',body());if(active()){dirty=false;await renderShotImages();}notify(`已生成 ${result.asset_ids.length} 张图片。`);}
-    catch(error){if(note.isConnected)note.textContent=error.message;throw error;}
-    finally{if(button.isConnected){button.disabled=!configured;button.textContent='重新生成';}}
-   });
-   $('upload-layer-image').onchange=e=>guarded(async()=>{
-    const file=e.target.files[0];if(!file)return;
-    if(!['image/png','image/jpeg'].includes(file.type)||file.size>8000000){notify('请上传 8 MB 以内的 PNG 或 JPEG。');return;}
-    const dataUrl=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(file);});
-    const result=await api('upload-shot-image',{...body(),reference_assets:[],data_url:dataUrl});
-    imageReferenceSelections[targetId]=[...new Set([...imageReferenceSelections[targetId],...result.asset_ids])].slice(-6);
-    if(active()){dirty=false;await renderShotImages();}notify('参考图已上传并选中。');
-   });
-   document.querySelectorAll('[data-adopt-image]').forEach(button=>button.onclick=()=>guarded(async()=>{
-    if(!leaveDraft())return;
-    await api('select-shot-image',{run_id:overview.run.id,shot_id:shot.shot_id,asset_id:button.dataset.adoptImage});
-    delete imageReferenceSelections[targetKey+':composition:'];
-    if(active()){dirty=false;await renderShotImages();}notify('已采用，角色、环境和整体画面各自保留采用版本。');
-   }));
-  };paint();
- }catch(error){if(active())$('image-studio').innerHTML=empty('暂时无法读取分镜',error.message||'请稍后刷新。');}
+ $('workspace').hidden=false;
+ $('workspace').innerHTML=`<div class="section-head"><div><div class="eyebrow">IMAGE STUDIO</div><h2>图像创作</h2><p>手动粘贴或编写提示词，按需上传参考图。</p></div>${badge(configured?'生图模型已配置':'请先配置生图模型',configured?'':'amber')}</div><section class="panel"><label class="field">正向提示词 <small>必填</small><textarea id="studio-positive" rows="8" maxlength="20000" required placeholder="在这里粘贴或编写希望生成的画面：主体、场景、画风、光线和构图……">${esc(studioDraft.positive)}</textarea></label><label class="field">反向提示词 <small>选填</small><textarea id="studio-negative" rows="3" maxlength="10000" placeholder="填写希望避免的内容，例如：模糊、水印、多余肢体……">${esc(studioDraft.negative)}</textarea><small>反向提示词作为文字约束提交，效果取决于模型。</small></label><section style="margin:24px 0"><div class="section-head"><div><h3>参考图 · 可选 <small class="muted" id="studio-reference-count"></small></h3><p>最多 6 张 PNG / JPG / JPEG，每张不超过 8 MB。不选也能生成。按选择顺序编号，可在正向提示词中使用“图一”“图二”。</p></div><label class="btn" style="cursor:pointer">＋ 上传参考图<input id="studio-upload" type="file" accept=".png,.jpg,.jpeg,image/png,image/jpeg" hidden></label></div><div id="studio-references"></div></section><div class="actions"><label>生成数量 <select id="studio-count">${[1,2,3,4].map(n=>`<option value="${n}" ${n===studioDraft.count?'selected':''}>${n} 张</option>`).join('')}</select></label><button class="btn primary" type="button" id="studio-generate" ${configured?'':'disabled'}>开始生成</button><button class="btn" type="button" id="studio-refresh">刷新记录与模型配置</button><span class="muted" id="studio-status" role="status">${configured?'提示词由你填写，点击后提交生成。':'请先在模型配置中配置生图模型。'}</span></div></section><section style="margin-top:24px"><div class="section-head"><div><h3>生成记录</h3><p>最新生成的排最前面，记录最多保留 8 张，超出自动清理（包括已存入图库的记录）；图库中的图片独立保留。</p></div></div><div id="studio-results" aria-live="polite">正在读取图片…</div></section>`;
+ const capture=()=>{studioDraft.positive=$('studio-positive').value;studioDraft.negative=$('studio-negative').value;studioDraft.count=Number($('studio-count').value);dirty=true;};
+ $('studio-positive').oninput=capture;$('studio-negative').oninput=capture;$('studio-count').onchange=capture;
+ const body=()=>({positive_prompt:studioDraft.positive.trim(),negative_prompt:studioDraft.negative.trim(),count:studioDraft.count,reference_assets:studioDraft.references.slice()});
+ const paintReferences=()=>{
+  if(!active())return;
+  $('studio-reference-count').textContent=`已选 ${studioDraft.references.length} / 6`;
+  $('studio-references').innerHTML=studioDraft.references.length?`<div style="display:flex;gap:14px;flex-wrap:wrap">${studioDraft.references.map((id,index)=>`<article style="width:130px"><img src="${studioAssetUrl({asset_id:id})}" alt="参考图${index+1}" style="width:130px;height:110px;object-fit:contain;background:#f3f5ef;border-radius:8px"><div class="actions"><b>图${'一二三四五六'[index]}</b><button class="btn" type="button" data-studio-remove="${esc(id)}">移除</button></div></article>`).join('')}</div>`:'<p class="muted">未选择参考图，使用提示词生成。</p>';
+  document.querySelectorAll('[data-studio-remove]').forEach(button=>button.onclick=()=>{studioDraft.references=studioDraft.references.filter(id=>id!==button.dataset.studioRemove);dirty=true;paintReferences();notify('参考图编号已更新，请核对提示词。');});
+ };
+ const paintResults=async()=>{
+  const images=await api('image-studio');if(!active())return;
+  const available=new Set(images.map(image=>image.asset_id));
+  const generated=images.filter(image=>image.purpose==='generated');
+  $('studio-results').innerHTML=generated.length?`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:18px">${generated.map(image=>`<article class="panel" style="padding:14px"><a href="${studioAssetUrl(image)}" target="_blank" rel="noopener"><img src="${studioAssetUrl(image)}" alt="生成图片" style="width:100%;height:240px;object-fit:contain;background:#f3f5ef;border-radius:8px"></a><p class="muted">${image.width} × ${image.height} · ${esc(image.model)}</p><div class="actions"><a class="btn" href="${studioAssetUrl(image)}" download="${esc(image.filename)}">下载原图</a><button class="btn" type="button" data-studio-use="${esc(image.asset_id)}">用作参考图</button><button class="btn" type="button" data-studio-collect="${esc(image.asset_id)}">＋ 保存到图库</button></div><details style="margin-top:12px"><summary>生成记录 · ${image.reference_assets.length} 张参考图</summary><h4>正向提示词</h4><p style="white-space:pre-wrap">${esc(image.positive_prompt)}</p><h4>反向提示词</h4><p style="white-space:pre-wrap">${esc(image.negative_prompt)||'未填写'}</p>${image.reference_assets.length?`<div style="display:flex;gap:8px;flex-wrap:wrap">${image.reference_assets.map((id,index)=>available.has(id)?`<a href="${studioAssetUrl({asset_id:id})}" target="_blank" rel="noopener"><img src="${studioAssetUrl({asset_id:id})}" alt="图${index+1}" style="width:70px;height:70px;object-fit:contain"></a>`:`<span class="muted">图${index+1} · 原生成记录已清理</span>`).join('')}</div>`:''}</details></article>`).join('')}</div>`:emptyTable(['图片','正向提示词','反向提示词','操作'],'还没有生成图片','填写正向提示词后点击「开始生成」，参考图可以不选。');
+  document.querySelectorAll('[data-studio-collect]').forEach(button=>button.onclick=()=>window.openLibraryImageSave(button.dataset.studioCollect,button));
+  document.querySelectorAll('[data-studio-use]').forEach(button=>button.onclick=()=>guarded(async()=>{if(studioDraft.references.length>=6){notify('最多选择 6 张参考图。');return;}button.disabled=true;try{const result=await api('studio-reference',{asset_id:button.dataset.studioUse});studioDraft.references.push(...result.asset_ids);dirty=true;paintReferences();notify('已添加为参考图，生成记录清理后仍可使用。');}finally{if(button.isConnected)button.disabled=false;}}));
+ };
+ paintReferences();
+ $('studio-generate').onclick=()=>guarded(async()=>{
+  capture();if(!studioDraft.positive.trim()){notify('请填写正向提示词。');$('studio-positive').focus();return;}
+  const payload=body(),button=$('studio-generate'),status=$('studio-status');button.disabled=true;button.textContent='正在生成…';status.textContent='提示词已提交，正在生成图片…';
+  try{const result=await api('studio-generate',payload);if(active()){await paintResults();status.textContent=`已生成 ${result.asset_ids.length} 张图片。`;dirty=false;}notify(`已生成 ${result.asset_ids.length} 张图片。`);}
+  catch(error){if(status.isConnected)status.textContent=error.message;throw error;}
+  finally{if(button.isConnected){button.disabled=!configured;button.textContent='开始生成';}}
+ });
+ $('studio-upload').onchange=e=>guarded(async()=>{
+  const input=e.target,file=input.files[0];if(!file)return;
+  try{
+   if(studioDraft.references.length>=6){notify('最多选择 6 张参考图，请先移除。');return;}
+   const mime=/\.jpe?g$/i.test(file.name)?'image/jpeg':/\.png$/i.test(file.name)?'image/png':file.type==='image/jpg'?'image/jpeg':file.type;
+   if(!['image/png','image/jpeg'].includes(mime)||file.size>8000000){notify('请上传 8 MB 以内的 PNG、JPG 或 JPEG。');return;}
+   capture();
+   const dataUrl=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(Error('图片读取失败，请重试。'));reader.readAsDataURL(file);});
+   const result=await api('studio-upload',{data_url:String(dataUrl).replace(/^data:[^;]*;/,'data:'+mime+';')});
+   studioDraft.references.push(...result.asset_ids);paintReferences();notify('参考图已上传并选中。');
+  }finally{input.value='';}
+ });
+ $('studio-refresh').onclick=()=>guarded(async()=>{capture();await refreshCloud();if(active())await renderImageStudio();});
+ try{await paintResults();}catch(error){if(active())$('studio-results').textContent=error.message;}
 }
 
 let modelCategory='image';
@@ -280,7 +258,7 @@ window.renderModels = function (){
    $('model-feedback').textContent=e.message||'获取模型列表失败，请核对地址与密钥。';
   }
  };
- if($('simple-profile'))$('simple-profile').onchange=e=>{data.activeProfile=e.target.value;renderModels();};
+ if($('simple-profile'))$('simple-profile').onchange=e=>{const profile=e.target.value;guarded(async()=>{await api('select-profile',{profile_id:profile});data.activeProfile=profile;await refreshCloud();renderModels();notify('默认语言模型已切换。');});};
  $('toggle-key').onclick=()=>{
   if(!typedKey){notify('已保存的密钥不会完整回显，仅显示后四位。');return;}
   revealed=!revealed;
@@ -386,7 +364,7 @@ function ensureRunButton(){
 window.renderBook = function (){if(tab==='tasks')tab='source';originalRenderBook();cloudCopy($('text-pages'));document.querySelector('[data-text="tasks"]')?.remove();const key=tab;const finish=()=>{if(route==='text'&&tab===key){if(key==='source')ensureRunButton();showProgress();}};if(key==='script')renderResults().finally(finish);else finish();}
 function scriptTable(run){
  const result=run?.result?.script||{},characters=result.characters||[],rows=result.shots||[];
- if(!rows.length)return empty('这一版还没有故事脚本','换一个执行版本，或等当前任务保存后再打开。');
+ if(!rows.length)return emptyTable(['编号','时长','分镜','动作','台词'],'这一版还没有故事脚本','换一个执行版本，或等当前任务保存后再打开。');
  const names=Object.fromEntries(characters.map(person=>[person.character_id,person.name]));
  const total=rows.reduce((sum,row)=>sum+Number(row.duration_seconds||0),0);
  const issues=run?.validation_issues||[];
@@ -406,7 +384,7 @@ async function renderResults(){
   const selected=available.find(run=>run.id===preferred)||available[0];
   const live=!!head&&['pending','running','pause_requested','stop_requested'].includes(head.status);
   const versionOptions=available.map(run=>`<option value="${esc(run.id)}" ${run===selected?'selected':''}>${esc(statuses[run.status]||run.status)} · ${esc(run.updated_at)}${run.stale_stages?.length?' · 章节已更新':''}</option>`).join('');
-  host.innerHTML=chapterBar()+`<section class="panel"><div class="section-head"><div><h2>故事脚本</h2><p>时长 · 分镜 · 动作 · 台词</p></div></div><div class="notice">上传章节后生成脚本。检查无误可导出；需要修改时逐行编辑并保存为新版本。</div><div class="actions" style="margin-bottom:18px"><button class="btn primary" type="button" id="generate-script" ${live?'disabled':''}>${available.length?'重新生成故事脚本':'生成故事脚本'}</button></div>${available.length?`<label class="field">执行版本<select id="result-run">${versionOptions}</select></label><div id="result-version-note"></div><div id="result-view"></div><div id="stage-editor"></div>`:empty(head?'故事脚本正在生成':'还没有故事脚本',head?'任务已提交，完成后这里会按行显示时长、分镜、动作与台词。':'点击上方按钮，用当前章节生成故事脚本。')}</section>`;
+  host.innerHTML=chapterBar()+`<section class="panel"><div class="section-head"><div><h2>故事脚本</h2><p>时长 · 分镜 · 动作 · 台词</p></div></div><div class="notice">上传章节后生成脚本。检查无误可导出；需要修改时逐行编辑并保存为新版本。</div><div class="actions" style="margin-bottom:18px"><button class="btn primary" type="button" id="generate-script" ${live?'disabled':''}>${available.length?'重新生成故事脚本':'生成故事脚本'}</button></div>${available.length?`<label class="field">执行版本<select id="result-run">${versionOptions}</select></label><div id="result-version-note"></div><div id="result-view"></div><div id="stage-editor"></div>`:emptyTable(['编号','时长','分镜','动作','台词'],head?'故事脚本正在生成':'还没有故事脚本',head?'任务已提交，完成后这里会按行显示时长、分镜、动作与台词。':'点击上方按钮，用当前章节生成故事脚本。')}</section>`;
   host.querySelector('#chapter-select').onchange=e=>{if(!leaveDraft()){e.target.value=chapterId||'';return;}dirty=false;chapterId=e.target.value||null;renderBook();};
   const generate=host.querySelector('#generate-script');if(generate)generate.onclick=startScriptRun;
   const select=host.querySelector('#result-run');
@@ -415,7 +393,8 @@ async function renderResults(){
    const run=available.find(item=>item.id===select.value);
    const stale=!!run.stale_stages?.length,historical=run.id!==head?.id;
    host.querySelector('#result-version-note').innerHTML=stale?'<div class="notice">章节原文已更新，这份历史结果保留供参考，需要重新生成后才能用于图片生成。</div>':historical?'<p class="muted">正在查看历史版本；编辑只会基于最新版本创建。</p>':'';
-   host.querySelector('#result-view').innerHTML=scriptTable(run);
+   host.querySelector('#result-view').innerHTML=`<div class="actions" style="margin-bottom:18px"><button class="btn" type="button" id="collect-script">＋ 保存到分镜词库</button></div>`+scriptTable(run);
+   $('collect-script').onclick=()=>window.saveLibraryOutput({work_id:currentId,kind:'prompts',run_id:run.id,revision:run.revision},$('collect-script'));
    const editor=host.querySelector('#stage-editor');editor.innerHTML='';
    if(!historical&&!stale&&!live){
     editor.innerHTML=`<details style="margin-top:24px"><summary>逐行编辑 · 保存为新版本</summary><p class="muted">一行一镜。时长单位秒；景别只能选择；台词照抄原文并含说话人，没有台词留空。</p><div id="script-editor"></div><button class="btn primary" type="button" id="save-script-rows" style="margin-top:16px">保存为新版本</button></details>`;

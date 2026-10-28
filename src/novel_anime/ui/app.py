@@ -550,12 +550,44 @@ def video_page(service: StudioService, chapter_id: str | None) -> None:
                 f"超出目标 {plan['target_seconds']:g} 秒：为了不拆开分镜，整镜并入后为 "
                 f"{group['seconds']:g} 秒。"
             )
-        st.text_area(
-            "整组提示词",
-            group["prompt"],
-            height=140,
-            key=f"video_prompt_{group['group_id']}_{run_key(plan)}",
-        )
+        left, right = st.columns(2)
+        with left:
+            st.text_area(
+                "中文提示词",
+                group["prompt"],
+                height=420,
+                key=f"video_prompt_{group['group_id']}_{run_key(plan)}",
+            )
+        with right:
+            st.text_area(
+                "英文提示词",
+                group.get("prompt_en", ""),
+                height=420,
+                key=(
+                    f"video_prompt_en_{group['group_id']}_{run_key(plan)}_"
+                    f"{group.get('prompt_en', '')}"
+                ),
+            )
+            profiles = {
+                key: value
+                for key, value in service.load_profiles().items()
+                if value.get("enabled", True)
+            }
+            if profiles:
+                profile_id = st.selectbox(
+                    "英文提示词使用的语言模型",
+                    list(profiles),
+                    key=f"video_model_{group['group_id']}",
+                )
+                if st.button("生成英文提示词", key=f"video_translate_{group['group_id']}"):
+                    execute(
+                        lambda: service.generate_video_english(
+                            chapter_id, group["group_id"], profile_id
+                        ),
+                        "英文提示词已生成并保存。",
+                    )
+            else:
+                st.caption("请先在模型配置中添加语言模型，再生成英文提示词。")
         st.dataframe(
             [
                 {

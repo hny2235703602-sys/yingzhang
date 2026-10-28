@@ -142,7 +142,9 @@ def test_video_page_compiles_prompt_groups(ui_service: StudioService) -> None:
     assert any("G001 · 19 秒" in value for value in headings), headings
     assert any("Wan2.2 TI2V-5B" in value for value in headings), headings
     prompts = [field.value for field in app.text_area]
-    assert any("山谷石阶" in value and "紧接着" in value for value in prompts), prompts
+    assert any(
+        "山谷石阶" in value and "0-13秒：" in value and "13-19秒：" in value for value in prompts
+    ), prompts
     assert any("接上一段最后一帧继续" in item.value for item in app.code), [
         item.value for item in app.code
     ]

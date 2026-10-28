@@ -11,9 +11,17 @@ import re
 import struct
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from novel_anime.application.library import (
+    create_person,
+    list_entries,
+    list_people,
+    remove_entry,
+    save_entry,
+)
 from novel_anime.application.service import StudioService
 from novel_anime.core.credentials import resolve_key, store_key
 from novel_anime.core.errors import AppError
@@ -101,6 +109,9 @@ def snapshot(service: StudioService) -> dict:
     return {
         "novels": works,
         "profiles": profiles,
+        "default_profile_id": service._load_config("model_preferences").get(
+            "default_profile_id", ""
+        ),
         "image_profile": image_profile,
         "templates": templates,
         "media_templates": media_templates,
@@ -108,9 +119,34 @@ def snapshot(service: StudioService) -> dict:
 
 
 def dispatch(service: StudioService, action: str, body: dict) -> dict:
+    if action == "select-profile":
+        profile_id = str(body.get("profile_id", ""))
+        profile = service.load_profiles().get(profile_id)
+        if not profile or not profile.get("enabled", True):
+            raise AppError("invalid_input", "请选择已启用的语言模型。")
+        service._save_config("model_preferences", {"default_profile_id": profile_id})
+        return {"selected": profile_id}
+    if action in {"studio-generate", "studio-upload"}:
+        from novel_anime.application.image_studio import create_images
+
+        return create_images(service, body, upload=action == "studio-upload")
+    if action == "studio-reference":
+        from novel_anime.application.image_studio import keep_reference
+
+        return keep_reference(service, str(body["asset_id"]))
+    if action == "library-save":
+        return save_entry(service, body)
+    if action == "gallery-person-create":
+        return create_person(service, body)
+    if action == "library-remove":
+        return remove_entry(service, str(body["work_id"]), str(body["id"]))
     if action == "save-script":
         service.save_run_script(str(body["run_id"]), body["script"], int(body["revision"]))
         return {"saved": True}
+    if action == "video-prompt-english":
+        return service.generate_video_english(
+            str(body["chapter_id"]), str(body["group_id"]), str(body["profile_id"])
+        )
     if action == "video-config":
         aspect_ratio = str(body.get("aspect_ratio", "16:9"))
         if aspect_ratio not in {"16:9", "9:16", "1:1"}:
@@ -154,6 +190,24 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
         if body.get("global_prompt") != global_prompt:
             raise AppError("version_conflict", "全局提示词已修改，请刷新工作台后生成。")
         extra = body.get("extra", "")
+        positive_prompt = body.get("positive_prompt")
+        negative_prompt = body.get("negative_prompt", "")
+        if (
+            (
+                action == "generate-shot-image"
+                and positive_prompt is not None
+                and (
+                    not isinstance(positive_prompt, str)
+                    or not positive_prompt.strip()
+                    or len(positive_prompt) > 20000
+                )
+            )
+            or not isinstance(negative_prompt, str)
+            or len(negative_prompt) > 10000
+        ):
+            raise AppError(
+                "invalid_input", "正向提示词需为 1 到 20000 字，反向提示词最多 10000 字。"
+            )
         count = body.get("count", 1)
         if (
             not isinstance(extra, str)
@@ -168,8 +222,8 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
             subject_id, str
         ):
             raise AppError("invalid_input", "请选择角色、环境或整体画面。")
-        subject = next(
-            (item for item in source["subjects"] if item["character_id"] == subject_id), None
+        subject: dict[str, Any] = next(
+            (item for item in source["subjects"] if item["character_id"] == subject_id), {}
         )
         if kind == "character" and not subject:
             raise AppError("invalid_input", "请选择当前分镜中的角色。")
@@ -218,15 +272,16 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
         reference_notes = []
         figure_names = ["图一", "图二", "图三", "图四", "图五", "图六"]
         if action == "generate-shot-image":
-            mentioned = re.findall(r"图\s*([一二三四五六七八九十]|\d+)", extra)
+            mentioned = re.findall(
+                r"图\s*([一二三四五六七八九十]|\d+)",
+                positive_prompt if positive_prompt is not None else extra,
+            )
             for mention in mentioned:
                 number = (
                     int(mention) if mention.isdigit() else "一二三四五六七八九十".index(mention) + 1
                 )
                 if not 1 <= number <= len(ids):
-                    raise AppError(
-                        "invalid_input", "补充要求引用了未选中的参考图，请核对图片编号。"
-                    )
+                    raise AppError("invalid_input", "提示词引用了未选中的参考图，请核对图片编号。")
         for index, ident in enumerate(ids, 1):
             item = available[ident]
             name = next(
@@ -262,6 +317,12 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
                 "【本次补充】\n" + extra.strip(),
             ]
         )
+        if positive_prompt is not None:
+            prompt = positive_prompt.strip()
+            if reference_notes:
+                prompt += "\n\n【参考图用途】\n" + "\n".join(reference_notes)
+        if negative_prompt.strip():
+            prompt += "\n\n【反向提示词 · 请避免以下内容】\n" + negative_prompt.strip()
         if len(prompt) > 40000:
             raise AppError("invalid_input", "合成提示词过长，请缩短描述。")
         if action == "upload-shot-image":
@@ -282,6 +343,7 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
                 and not subject["prompt"].strip()
                 and not references
                 and not extra.strip()
+                and not positive_prompt
             ):
                 raise AppError(
                     "invalid_input", "此角色尚无外观描述，请补充要求或上传参考图后生成。"
@@ -368,7 +430,7 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
                 work_id = uuid4().hex
                 session.add(WorkRow(id=work_id, title=title))
             row = session.get(ConfigRow, "web_metadata")
-            metadata = dict(row.value) if row else {}
+            work_metadata = dict(row.value) if row else {}
             cover = str(body.get("cover", ""))
             if cover and not cover.startswith(
                 ("data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,")
@@ -376,12 +438,12 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
                 raise AppError("invalid_input", "封面格式不支持。")
             if len(cover) > 2_900_000:
                 raise AppError("invalid_input", "封面不能超过 2 MB。")
-            metadata[work_id] = {
+            work_metadata[work_id] = {
                 "style": str(body.get("style", "国风动画"))[:100],
                 "cover": cover,
                 "updated": now(),
             }
-            session.merge(ConfigRow(key="web_metadata", value=metadata))
+            session.merge(ConfigRow(key="web_metadata", value=work_metadata))
         return {"id": work_id}
     if action == "chapter":
         ident = service.save_chapter(
@@ -509,12 +571,12 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
             raise AppError(
                 "invalid_input", "请检查生图模型名称、本地运行器或 API 地址，以及超时设置。"
             )
-        key = body.get("api_key")
+        image_api_key = body.get("api_key")
         if (
-            not isinstance(key, str)
-            or len(key) > 4096
-            or "\n" in key
-            or (backend == "openai" and not key.strip() and not resolve_key(api_key_env))
+            not isinstance(image_api_key, str)
+            or len(image_api_key) > 4096
+            or "\n" in image_api_key
+            or (backend == "openai" and not image_api_key.strip() and not resolve_key(api_key_env))
         ):
             raise AppError("invalid_input", "API Key 格式不正确。")
         service._save_config(
@@ -532,8 +594,8 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
         )
         if body.get("clear_key"):
             store_key(api_key_env, "")
-        elif key.strip():
-            store_key(api_key_env, key)
+        elif image_api_key.strip():
+            store_key(api_key_env, image_api_key)
         return {"saved": True}
     if action == "profile":
         profile = ModelProfile(**body)
@@ -758,7 +820,8 @@ def image_dimensions(image_bytes: bytes, mime_type: str) -> tuple[int, int]:
     if (
         mime_type != "image/jpeg"
         or not image_bytes.startswith(b"\xff\xd8")
-        or not image_bytes.endswith(b"\xff\xd9")
+        # Exporters may append metadata after the JPEG end-of-image marker.
+        or image_bytes.rfind(b"\xff\xd9") < 2
     ):
         raise ValueError("invalid JPEG")
     index = 2
@@ -811,6 +874,95 @@ class Handler(BaseHTTPRequestHandler):
             service = StudioService()
             if path == "/api/state":
                 self.json(200, snapshot(service))
+            elif path == "/api/image-studio":
+                from novel_anime.application.image_studio import list_images
+
+                self.json(200, list_images(service))
+            elif path.startswith("/assets/studio/"):
+                from novel_anime.application.image_studio import image_asset
+
+                image_path, image_mime = image_asset(
+                    service, Path(path).name.removesuffix(".img")
+                )
+                self.send(200, image_path.read_bytes(), image_mime)
+            elif path == "/api/library-counts":
+                from sqlalchemy import func, select
+
+                from novel_anime.persistence.database import LibraryEntryRow
+
+                with service.sessions() as session:
+                    counts = session.execute(
+                        select(
+                            LibraryEntryRow.work_id, LibraryEntryRow.kind, func.count()
+                        ).group_by(LibraryEntryRow.work_id, LibraryEntryRow.kind)
+                    ).all()
+                result: dict[str, dict[str, int]] = {}
+                for work_id, kind, count in counts:
+                    result.setdefault(work_id, {})[kind] = count
+                self.json(200, result)
+            elif path.startswith("/api/gallery-people/"):
+                self.json(200, list_people(service, path.removeprefix("/api/gallery-people/")))
+            elif path.startswith("/api/library/"):
+                self.json(200, list_entries(service, path.removeprefix("/api/library/")))
+            elif path.startswith("/assets/library-images/"):
+                filename = Path(path).name
+                if not re.fullmatch(r"[a-f0-9]{64}\.(png|jpg)", filename):
+                    self.send(404, b"Not found", "text/plain")
+                    return
+                target = get_settings().data_dir / "assets" / "library_images" / filename
+                if not target.is_file():
+                    self.send(404, b"Not found", "text/plain")
+                    return
+                self.send(
+                    200,
+                    target.read_bytes(),
+                    "image/png" if target.suffix == ".png" else "image/jpeg",
+                )
+            elif path.startswith("/assets/library-videos/"):
+                filename = Path(path).name
+                if not re.fullmatch(r"[a-f0-9]{64}\.(mp4|webm)", filename):
+                    self.send(404, b"Not found", "text/plain")
+                    return
+                target = get_settings().data_dir / "assets" / "library_videos" / filename
+                if not target.is_file():
+                    self.send(404, b"Not found", "text/plain")
+                    return
+                size = target.stat().st_size
+                start, end, status = 0, size - 1, 200
+                requested = self.headers.get("Range")
+                if requested:
+                    match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested)
+                    if not match or not any(match.groups()):
+                        self.send(416, b"Invalid range", "text/plain")
+                        return
+                    if match[1]:
+                        start = int(match[1])
+                        end = min(int(match[2]), end) if match[2] else end
+                    else:
+                        start = max(0, size - int(match[2]))
+                    if start > end or start >= size:
+                        self.send_response(416)
+                        self.send_header("Content-Range", f"bytes */{size}")
+                        self.end_headers()
+                        return
+                    status = 206
+                self.send_response(status)
+                self.send_header("Content-Type", "video/" + target.suffix[1:])
+                self.send_header("Content-Length", str(end - start + 1))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                if status == 206:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                self.end_headers()
+                with target.open("rb") as video:
+                    video.seek(start)
+                    remaining = end - start + 1
+                    while remaining:
+                        chunk = video.read(min(262144, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
             elif path.startswith("/api/runs/"):
                 self.json(200, service.list_runs(path.removeprefix("/api/runs/")))
             elif path.startswith("/api/overview/"):
@@ -870,9 +1022,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, target.read_bytes(), mime)
             elif path == "/health":
                 self.send(200, b"ok", "text/plain")
-            elif path in {"/", "/index.html", "/cloud.js"}:
-                name = "cloud.js" if path == "/cloud.js" else "index.html"
-                mime = "text/javascript" if name.endswith(".js") else "text/html"
+            elif path in {
+                "/",
+                "/index.html",
+                "/cloud.js",
+                "/library.js",
+                "/library.css",
+                "/tables.js",
+                "/tables.css",
+            }:
+                name = Path(path).name if path not in {"/", "/index.html"} else "index.html"
+                mime = {".js": "text/javascript", ".css": "text/css"}.get(
+                    Path(name).suffix, "text/html"
+                )
                 self.send(200, (STATIC / name).read_bytes(), mime + "; charset=utf-8")
             else:
                 self.send(404, b"Not found", "text/plain")
@@ -897,7 +1059,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 12_000_000:
+            limit = 65_000_000 if urlparse(self.path).path == "/api/library-save" else 12_000_000
+            if not 0 < length <= limit:
                 self.send(413, b"Request too large", "text/plain")
                 return
             body = json.loads(self.rfile.read(length))

@@ -275,6 +275,10 @@ class StudioService:
         )
         shots = {str(shot["shot_id"]): shot for shot in result.get("shots", [])}
         for group in plan["groups"]:
+            cached = self._load_config(f"video_prompt_en:{run['id']}:{group['group_id']}")
+            group["prompt_en"] = (
+                cached.get("text", "") if cached.get("source") == digest(group["prompt"]) else ""
+            )
             for item in group["passes"]:
                 first = shots.get(item["shot_ids"][0], {}) if item["shot_ids"] else {}
                 item["first_shot"] = {
@@ -289,6 +293,45 @@ class StudioService:
             "max_seconds": ceiling,
             "aspect_ratio": aspect_ratio,
         }
+
+    def generate_video_english(
+        self, chapter_id: str, group_id: str, profile_id: str
+    ) -> dict[str, str]:
+        """Explicit model request; GET/refresh never consumes model tokens."""
+        from novel_anime.domain.video import VIDEO_TRANSLATION_INSTRUCTION, EnglishVideoPrompt
+        from novel_anime.integrations.language_models.client import LLMClient
+
+        plan = self.video_plan(chapter_id)
+        group = next((g for g in plan["groups"] if g["group_id"] == group_id), None)
+        if group is None:
+            raise AppError("invalid_input", "视频组不存在，请刷新分镜后重试。")
+        selected = self.load_profiles().get(profile_id)
+        if not selected:
+            raise AppError("invalid_input", "请先保存并选择语言模型配置。")
+        profile = ModelProfile(**selected)
+        if not profile.enabled:
+            raise AppError("model_disabled", "模型已关闭，请在设置中启用。")
+        result, _ = LLMClient(profile).generate(
+            EnglishVideoPrompt,
+            VIDEO_TRANSLATION_INSTRUCTION,
+            {"chinese_prompt": group["prompt"]},
+            "video_prompt_translation",
+        )
+        text = EnglishVideoPrompt.model_validate(result.model_dump()).render()
+        current = self.video_plan(chapter_id)
+        latest = next((g for g in current["groups"] if g["group_id"] == group_id), None)
+        if (
+            not current["run"]
+            or current["run"]["id"] != plan["run"]["id"]
+            or not latest
+            or latest["prompt"] != group["prompt"]
+        ):
+            raise AppError("version_conflict", "分镜或提示词已更新，请刷新后重新生成英文提示词。")
+        self._save_config(
+            f"video_prompt_en:{plan['run']['id']}:{group_id}",
+            {"source": digest(group["prompt"]), "text": text},
+        )
+        return {"prompt_en": text}
 
     def shot_image_source(self, run_id: str, shot_id: str) -> dict[str, Any]:
         """Image prompts read only script rows, so drawing never re-runs the text stage."""
