@@ -80,6 +80,10 @@ def create_images(service: StudioService, body: dict, *, upload: bool = False) -
 
     positive, negative = body.get("positive_prompt", ""), body.get("negative_prompt", "")
     count = body.get("count", 1)
+    width, height = body.get("width", 1024), body.get("height", 1024)
+    if any(type(value) is not int or not 256 <= value <= 2048 or value % 16
+           for value in (width, height)):
+        raise AppError("invalid_input", "图片宽高需为 256–2048 像素，且为 16 的倍数。")
     if (
         not isinstance(positive, str)
         or len(positive) > 20000
@@ -142,7 +146,7 @@ def create_images(service: StudioService, body: dict, *, upload: bool = False) -
         key = resolve_key(profile.get("api_key_env", ""))
         if profile.get("backend") != "mflux" and not key:
             raise AppError("image_missing_api_key", "请先保存生图模型 API Key。")
-        client = ImageGenerationClient(profile, key)
+        client = ImageGenerationClient({**profile, "width": width, "height": height}, key)
         generated = (
             client.generate(prompt, count, references=references)
             if references

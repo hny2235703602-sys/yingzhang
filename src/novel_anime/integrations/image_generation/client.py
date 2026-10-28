@@ -36,12 +36,16 @@ class ImageGenerationClient:
             raise AppError("image_invalid_config", "生图模型 API 地址无效。")
         if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
             raise AppError("image_invalid_config", "非本机生图服务必须使用 HTTPS。")
+        size = f"{self.profile.get('width', 1024)}x{self.profile.get('height', 1024)}"
         try:
             if references:
                 response = httpx.post(
                     f"{base_url}/images/edits",
                     headers={"Authorization": f"Bearer {self.api_key}"},
-                    data={"model": self.profile["model"], "prompt": prompt, "n": str(count)},
+                    data={
+                        "model": self.profile["model"], "prompt": prompt,
+                        "n": str(count), "size": size,
+                    },
                     files=[
                         (
                             "image[]",
@@ -65,6 +69,7 @@ class ImageGenerationClient:
                         "prompt": prompt,
                         "n": count,
                         "response_format": "b64_json",
+                        "size": size,
                     },
                     timeout=float(self.profile.get("timeout", 300)),
                     follow_redirects=False,
@@ -150,9 +155,9 @@ class ImageGenerationClient:
                         "--prompt",
                         prompt,
                         "--width",
-                        "1024",
+                        str(self.profile.get("width", 1024)),
                         "--height",
-                        "1024",
+                        str(self.profile.get("height", 1024)),
                         "--steps",
                         "4",
                         "--low-ram",

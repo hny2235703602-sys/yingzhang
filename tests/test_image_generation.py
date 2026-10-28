@@ -34,6 +34,7 @@ def test_openai_compatible_image_request(monkeypatch):
         "prompt": "A character",
         "n": 1,
         "response_format": "b64_json",
+        "size": "1024x1024",
     }
     assert captured["follow_redirects"] is False
 
@@ -118,3 +119,17 @@ def test_mflux_references_use_edit_executable_and_real_files(tmp_path, monkeypat
         (PNG, "image/png")
     ]
     assert calls[0][0].endswith("mflux-generate-flux2-edit")
+
+
+def test_selected_image_dimensions_reach_api(monkeypatch):
+    captured = {}
+    def post(url, **kwargs):
+        captured.update(kwargs)
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]})
+    monkeypatch.setattr(httpx, "post", post)
+    client = ImageGenerationClient({"base_url": "https://images.example/v1", "model": "test",
+                                    "width": 864, "height": 1536}, "key")
+    client.generate("portrait")
+    assert captured["json"]["size"] == "864x1536"
+    client.generate("portrait", references=[(PNG, "image/png")])
+    assert captured["data"]["size"] == "864x1536"
