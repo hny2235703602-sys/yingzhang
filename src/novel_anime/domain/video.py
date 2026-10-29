@@ -22,7 +22,8 @@ VIDEO_MIN_FRAMES = 5
 # 画幅沿用官方工作流的 1280x704（16:9），竖屏与其转置；1:1 取 32 的整数倍。
 VIDEO_SIZES = {"16:9": (1280, 704), "9:16": (704, 1280), "1:1": (960, 960)}
 VIDEO_NEGATIVE_PROMPT = (
-    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，"
+    "动漫，插画，线稿，平涂，卡通脸，塑料皮肤，过度磨皮，色调艳丽，过曝，静态，细节模糊不清，字幕，"
+    "风格，作品，画作，画面，静止，整体发灰，"
     "最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，"
     "画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，"
     "三条腿，背景人很多，倒着走"
@@ -117,7 +118,7 @@ def _clean(parts: Sequence[str]) -> str:
 
 
 def shot_prompt(shot: dict[str, Any], names: dict[str, str]) -> str:
-    """单镜提示词：先场景与人物，再画面与动作，最后景别与运镜。"""
+    """单镜提示词：先真实场景与人物，再微表情/动作，最后景别与运镜。"""
     people = [names.get(str(key), str(key)) for key in shot.get("character_ids", [])]
     lead = _clean(
         [
@@ -136,7 +137,7 @@ def shot_prompt(shot: dict[str, Any], names: dict[str, str]) -> str:
         text += f"。台词「{dialogue}」，口型与神态随台词变化，画面不出现字幕"
     if camera:
         text += f"。镜头：{camera}，运动平稳"
-    return text + "。"
+    return text + "。真人影视摄影，保留自然皮肤纹理与细微表演，环境光线和空间透视连续。"
 
 
 class EnglishVideoPrompt(BaseModel):
@@ -202,8 +203,10 @@ def build_prompt(shots: Sequence[dict[str, Any]], names: dict[str, str], style: 
     camera_rules = "；".join(dict.fromkeys(cameras))
     lines.append(
         (f"镜头要求：{camera_rules}，严格遵守各时间段的景别与运镜。" if camera_rules else "")
+        + "真人摄影质感；表演以可见微表情为核心，"
+        + "保留眼神落点、眨眼、呼吸、嘴角、眉眼、下颌和手指的自然变化；"
         + "场景物品仅限分镜画面中已描述的物品与角色，不添加无关人物、玩偶、玩具或额外人偶；"
-        + "不出现字幕、文字或水印。"
+        + "环境保持真实空间透视、材质、光线方向、天气和接触阴影连续；不出现字幕、文字或水印。"
     )
     sound = "音效仅限与动作、碰撞及环境对应的声音"
     if any(str(shot.get("dialogue") or "").strip() for shot in shots):

@@ -31,6 +31,7 @@ class ModelProfile(DomainModel):
     timeout: float = Field(default=120, gt=0)
     retries: int = Field(default=2, ge=0, le=5)
     structured_output: bool = False
+    stream: bool = True
     # 思考型模型（如 Qwen3.5）会把输出预算消耗在推理上，显式设为 none 可关闭。
     reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
     temperature: float | None = Field(default=None, ge=0, le=2)

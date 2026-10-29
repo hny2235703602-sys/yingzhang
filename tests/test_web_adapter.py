@@ -1412,3 +1412,103 @@ def test_reference_jpeg_allows_trailing_metadata(service):
     assert image_asset(service, uploaded['asset_ids'][0])[0].read_bytes() == jpeg
     with pytest.raises(ValueError):
         image_dimensions(jpeg.replace(b'\xff\xd9', b''), 'image/jpeg')
+
+
+def test_library_excel_download_uses_selected_snapshot(service, shot_studio):
+    import threading
+    from http.server import ThreadingHTTPServer
+    from io import BytesIO
+    from urllib.error import HTTPError
+    from urllib.parse import urlencode
+    from urllib.request import urlopen
+    from xml.etree import ElementTree as ET
+    from zipfile import ZipFile
+
+    from novel_anime.persistence.database import LibraryEntryRow
+    from novel_anime.ui.web_server import Handler
+
+    chapter, run_id = shot_studio
+    work = service.get_chapter(chapter)["work_id"]
+    saved = dispatch(service, "library-save", {
+        "kind": "prompts", "work_id": work, "run_id": run_id,
+    })
+    literal = '=HYPERLINK("https://example.com")\n中文 & <画面>'
+    with service.sessions.begin() as session:
+        row = session.get(LibraryEntryRow, saved["id"])
+        content = dict(row.content)
+        content["groups"] = [{
+            "group_id": "G001", "seconds": 8, "prompt": "组提示词",
+            "shot_prompts": [
+                {"shot_id": "SH001", "duration_seconds": 3, "prompt": literal,
+                 "keyframe_prompt": "关键帧一"},
+                {"shot_id": "SH002", "duration_seconds": 5, "prompt": "第二镜",
+                 "keyframe_prompt": "关键帧二"},
+            ],
+        }]
+        row.content = content
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    address = f"http://127.0.0.1:{server.server_port}/api/library-export?"
+    try:
+        with urlopen(address + urlencode({"work_id": work, "entry_id": saved["id"]})) as response:
+            assert response.headers["Content-Type"].endswith("spreadsheetml.sheet")
+            assert "attachment; filename*=UTF-8''" in response.headers["Content-Disposition"]
+            with ZipFile(BytesIO(response.read())) as archive:
+                for name in archive.namelist():
+                    ET.fromstring(archive.read(name))
+                sheet = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+                ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+                rows = sheet.findall("s:sheetData/s:row", ns)
+                assert len(rows) == 5
+                assert rows[3].find("s:c[@r='F4']/s:is/s:t", ns).text == literal
+                assert rows[4].find("s:c[@r='G5']/s:is/s:t", ns).text == "关键帧二"
+                assert sheet.find(".//s:f", ns) is None
+        with pytest.raises(HTTPError) as caught:
+            urlopen(address + urlencode({"work_id": work, "entry_id": "missing"}))
+        assert caught.value.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_text_connection_uses_unsaved_profile_without_saving(service, monkeypatch):
+    from novel_anime.integrations.language_models.client import LLMClient
+
+    before = service.load_profiles()
+    captured = {}
+
+    def probe(client):
+        captured['model'] = client.profile.model
+        captured['key'] = client._api_key
+        return {'ok': True}
+
+    monkeypatch.setattr(LLMClient, 'probe', probe)
+    result = dispatch(service, 'simple-profile', {
+        'id': 'connection-test', 'url': 'http://127.0.0.1:18080/v1',
+        'model': 'local-model', 'key': 'temporary', 'test_connection': True,
+    })
+    assert result['ok'] is True
+    assert captured == {'model': 'local-model', 'key': 'temporary'}
+    assert service.load_profiles() == before
+
+
+def test_image_connection_checks_selected_model(service, monkeypatch):
+    from novel_anime.integrations.image_generation.client import ImageGenerationClient
+
+    monkeypatch.setattr(ImageGenerationClient, 'list_models', lambda self: ['flux'])
+    body = {'base_url': 'https://images.example/v1', 'model': 'flux', 'api_key': 'temporary'}
+    before = service._load_config('image_profile')
+    assert dispatch(service, 'image-test', body)['ok'] is True
+    with pytest.raises(AppError):
+        dispatch(service, 'image-test', {**body, 'model': 'missing'})
+    assert service._load_config('image_profile') == before
+
+
+def test_image_api_rejects_local_model_path(service):
+    with pytest.raises(AppError, match='本地模型路径'):
+        dispatch(service, 'image-profile', {
+            'name': 'mixed', 'backend': 'openai', 'base_url': 'https://images.example/v1',
+            'model': '/Users/apple/flux-model', 'api_key': 'temporary',
+        })

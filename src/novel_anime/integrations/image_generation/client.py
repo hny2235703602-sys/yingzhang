@@ -24,6 +24,56 @@ class ImageGenerationClient:
         self.profile = dict(profile)
         self.api_key = api_key
 
+    def list_models(self) -> list[str]:
+        """Read the provider catalog without generating an image."""
+        base_url = str(self.profile.get("base_url", "")).rstrip("/")
+        parsed = urlparse(base_url)
+        if (
+            not parsed.netloc
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.scheme not in {"https", "http"}
+            or (
+                parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+            )
+        ):
+            raise AppError("image_invalid_config", "请填写 HTTPS 地址或本机 HTTP 地址。")
+        try:
+            response = httpx.get(
+                f"{base_url}/models",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=30,
+                follow_redirects=False,
+            )
+            response.raise_for_status()
+            models = sorted(
+                {
+                    row["id"].strip()
+                    for row in response.json()["data"]
+                    if isinstance(row, dict)
+                    and isinstance(row.get("id"), str)
+                    and row["id"].strip()
+                }
+            )
+        except httpx.HTTPStatusError as exc:
+            message = (
+                "获取模型失败，请检查 API Key 与权限。"
+                if exc.response.status_code in {401, 403}
+                else "服务未提供模型列表，请手动填写模型 ID。"
+            )
+            raise AppError("image_models_unavailable", message) from None
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            raise AppError(
+                "image_models_unavailable", "无法获取模型列表，请核对地址或手动填写模型 ID。"
+            ) from None
+        if not models:
+            raise AppError(
+                "image_models_unavailable", "服务返回的模型列表为空，请手动填写模型 ID。"
+            )
+        return models
+
     def generate(
         self, prompt: str, count: int = 1, references: list[tuple[bytes, str]] | None = None
     ) -> list[tuple[bytes, str]]:
@@ -43,8 +93,10 @@ class ImageGenerationClient:
                     f"{base_url}/images/edits",
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     data={
-                        "model": self.profile["model"], "prompt": prompt,
-                        "n": str(count), "size": size,
+                        "model": self.profile["model"],
+                        "prompt": prompt,
+                        "n": str(count),
+                        "size": size,
                     },
                     files=[
                         (

@@ -133,3 +133,21 @@ def test_selected_image_dimensions_reach_api(monkeypatch):
     assert captured["json"]["size"] == "864x1536"
     client.generate("portrait", references=[(PNG, "image/png")])
     assert captured["data"]["size"] == "864x1536"
+
+
+def test_image_model_catalog(monkeypatch):
+    def get(url, **kwargs):
+        assert url == 'https://images.example/v1/models'
+        assert kwargs['headers']['Authorization'] == 'Bearer private-key'
+        assert kwargs['follow_redirects'] is False
+        return httpx.Response(200, request=httpx.Request('GET', url), json={
+            'data': [{'id': 'flux'}, {'id': 'gpt-image'}, {'id': 'flux'}, {'id': None}]
+        })
+    monkeypatch.setattr(httpx, 'get', get)
+    client = ImageGenerationClient({'base_url': 'https://images.example/v1'}, 'private-key')
+    assert client.list_models() == ['flux', 'gpt-image']
+
+
+def test_image_model_catalog_rejects_remote_http():
+    with pytest.raises(AppError):
+        ImageGenerationClient({'base_url': 'http://images.example/v1'}, '').list_models()

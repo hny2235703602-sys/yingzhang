@@ -100,8 +100,12 @@ class AdaptationFlow:
                 raise AppError(
                     "paragraph_too_long", "某一段超过上下文预算，请增大预算或按语义换行。"
                 )
-            if chunks and self._within_budget(
-                ScriptBatch, self._payload(chunks[-1] + [paragraph], [], [])
+            if (
+                chunks
+                and sum(len(p["text"]) for p in chunks[-1] + [paragraph]) <= 1000
+                and self._within_budget(
+                    ScriptBatch, self._payload(chunks[-1] + [paragraph], [], [])
+                )
             ):
                 chunks[-1].append(paragraph)
             else:
@@ -141,6 +145,10 @@ class AdaptationFlow:
                 "character_ids 沿用 known_characters 中的 character_id；"
                 "本次没有依据的新人物自行以 C_ 开头编号，并在 characters 中给出外观。"
                 "各行时长与景别要有变化，避免连续同景别。"
+                "这是真人 AI 电视剧：frame 和 action 必须把情绪写成可见的微表情与微动作，"
+                "至少交代视线、眼睑/眉眼、嘴角、呼吸、下颌或手指中的相关变化，禁止只写抽象心理。"
+                "setting 必须包含可拍摄的真实地点、时间/天气、空间材质、光线来源与前后景关系；"
+                "保持走位、道具、光线、服装和表情状态连续，禁止动漫、线稿、平涂和游戏立绘词汇。"
             ),
         }
 

@@ -210,7 +210,9 @@ def test_single_paragraph_over_budget_is_rejected(monkeypatch: pytest.MonkeyPatc
     assert caught.value.code == "paragraph_too_long"
 
 
-def test_short_dialogue_chapter_fits_default_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_short_dialogue_chapter_fits_budget_in_bounded_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     lines = [f"「第{i:03d}句」他应了一声，目光没有离开门口。" for i in range(160)]
     text = "\n".join(lines)
     assert len(text) > 3000
@@ -234,7 +236,7 @@ def test_short_dialogue_chapter_fits_default_budget(monkeypatch: pytest.MonkeyPa
     document = InputDocument(work_id="work", title="章节", text=text).model_dump()
     flow = AdaptationFlow(document, profile(), lambda result, stage: None, lambda stage: None)
     result = flow.run({}, InMemorySaver(), "dialogue-run")
-    assert calls == ["script"]
+    assert len(calls) > 1 and set(calls) == {"script"}
     assert "script" in result
 
 
@@ -361,3 +363,22 @@ def test_validation_issues_require_review_instead_of_success(
     row = service.get_run(run_id)
     assert row["status"] == "review_required"
     assert any("未被写入脚本" in issue for issue in row["validation_issues"])
+
+
+def test_unlimited_budget_still_splits_long_chapter():
+    flow = AdaptationFlow(
+        InputDocument(work_id="work", title="章节", text="正文").model_dump(),
+        profile().model_copy(
+            update={
+                "context_budget": 0,
+                "max_output_tokens": 0,
+            }
+        ),
+        lambda *args: None,
+        lambda *args: None,
+    )
+    source = [{"paragraph_id": f"P{i:04d}", "text": "文" * 400} for i in range(1, 8)]
+    chunks = flow._chunks(source)
+    assert len(chunks) == 4
+    assert [p for chunk in chunks for p in chunk] == source
+    assert all(sum(len(p["text"]) for p in chunk) <= 1000 for chunk in chunks)

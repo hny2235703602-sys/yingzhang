@@ -7,10 +7,11 @@ import re
 import time
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
-from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, OpenAI
 from pydantic import BaseModel, ValidationError
 
 from novel_anime.core.credentials import resolve_key
@@ -237,6 +238,9 @@ class LLMClient:
                 if self.profile.reasoning_effort and self.profile.protocol == "chat_completions":
                     # 仅对 chat_completions 显式下发；Responses 协议的该字段语义不同。
                     kwargs["reasoning_effort"] = self.profile.reasoning_effort
+                if self.profile.protocol == "chat_completions" and self.profile.stream:
+                    kwargs["stream"] = True
+                    return self._collect_stream(endpoint(**kwargs))
                 return endpoint(**kwargs)
             except APITimeoutError:
                 raise AppError(
@@ -285,6 +289,49 @@ class LLMClient:
                     "llm_connection",
                     category + "，已耗尽连接重试。当前请求用量未知；已保存结果可继续使用。",
                 ) from None
+
+    @staticmethod
+    def _collect_stream(stream: Any) -> Any:
+        """Collect only final content; never accept an interrupted JSON response."""
+        parts: list[str] = []
+        finish = None
+        refusal = None
+        model = None
+        usage = None
+        request_id = getattr(getattr(stream, "response", None), "headers", {}).get("x-request-id")
+        try:
+            for chunk in stream:
+                model = getattr(chunk, "model", None) or model
+                usage = getattr(chunk, "usage", None) or usage
+                for choice in chunk.choices:
+                    if choice.index != 0:
+                        continue
+                    if choice.delta.content:
+                        parts.append(choice.delta.content)
+                    refusal = getattr(choice.delta, "refusal", None) or refusal
+                    finish = choice.finish_reason or finish
+        except (httpx.HTTPError, APIError):
+            raise AppError(
+                "llm_stream_interrupted",
+                "模型流式响应中断，本批次未完成；此前已完成的批次已保存，可继续生成。当前请求用量未知。",
+            ) from None
+        finally:
+            stream.close()
+        if finish is None:
+            raise AppError(
+                "llm_stream_interrupted", "模型流式响应提前结束；已保存此前批次，可继续生成。"
+            )
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason=finish,
+                    message=SimpleNamespace(content="".join(parts), refusal=refusal),
+                )
+            ],
+            model=model,
+            usage=usage,
+            _request_id=request_id,
+        )
 
     @staticmethod
     def _retry_delay(exc: APIStatusError, attempt: int) -> float:

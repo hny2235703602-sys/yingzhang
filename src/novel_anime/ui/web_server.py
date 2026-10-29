@@ -12,7 +12,7 @@ import struct
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from uuid import uuid4
 
 from novel_anime.application.library import (
@@ -28,7 +28,7 @@ from novel_anime.core.errors import AppError
 from novel_anime.core.settings import get_settings
 from novel_anime.domain.models import ModelProfile
 from novel_anime.persistence.database import ConfigRow, WorkRow, now
-from novel_anime.ui.export import safe_payload
+from novel_anime.ui.export import export_prompt_excel, safe_payload
 
 MAX_IMAGE_BYTES = 8_000_000
 IMAGE_DATA_URL = re.compile(r"^data:(image/(?:png|jpeg));base64,([A-Za-z0-9+/=]+)$")
@@ -523,18 +523,62 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
             # Transient key used only for this catalog request; never persisted by listing.
             models = LLMClient(profile, api_key=supplied or None).list_models()
             return {"models": models}
+        if body.get("test_connection"):
+            if body.get("clear_key") and not supplied.strip():
+                raise AppError("invalid_input", "请填写用于测试的 API Key。")
+            from time import monotonic
+
+            started = monotonic()
+            LLMClient(profile, api_key=supplied or None).probe()
+            return {"ok": True, "seconds": round(monotonic() - started, 2)}
         service.save_profile(profile.model_dump())
         if body.get("clear_key"):
             store_key(profile.api_key_env, "")
         elif supplied.strip():
             store_key(profile.api_key_env, supplied)
         return {"id": profile.profile_id}
+    if action in {"image-models", "image-test"}:
+        from novel_anime.integrations.image_generation.client import ImageGenerationClient
+
+        saved = service._load_config("image_profile") or {}
+        if action == "image-test" and body.get("backend") == "mflux":
+            executable = Path(str(body.get("executable", "")))
+            model = str(body.get("model", "")).strip()
+            if not executable.is_file() or not os.access(executable, os.X_OK):
+                raise AppError("invalid_input", "本地 mflux 可执行文件不存在或无法执行。")
+            if not model or (model.startswith("/") and not Path(model).is_dir()):
+                raise AppError("invalid_input", "请检查本地模型路径或仓库 ID。")
+            return {"ok": True, "message": "本地运行器检查通过；实际模型加载需在生成时验证。"}
+        key = str(body.get("api_key", "")).strip() or resolve_key(
+            saved.get("api_key_env", "YINGZHANG_IMAGE_API_KEY")
+        )
+        models = ImageGenerationClient(
+            {"base_url": str(body.get("base_url", "")).strip()}, key or ""
+        ).list_models()
+        if action == "image-test":
+            model = str(body.get("model", "")).strip()
+            if not model or model not in models:
+                raise AppError(
+                    "invalid_input", "服务连接成功，但所选模型未出现在模型列表中，请核对模型 ID。"
+                )
+            return {
+                "ok": True,
+                "message": (
+                    "连接成功，模型已在列表中找到。"
+                    "此测试不生成图片，生图权限需在生成时验证。"
+                ),
+            }
+        return {"models": models}
     if action == "image-profile":
         name = str(body.get("name", "")).strip()
         backend = str(body.get("backend", "openai"))
         base_url = str(body.get("base_url", "")).strip().rstrip("/")
         model = str(body.get("model", "")).strip()
-        executable = str(body.get("executable", "")).strip()
+        executable_text = str(body.get("executable", "")).strip()
+        if backend == "openai" and model.startswith(("/", "~/")):
+            raise AppError(
+                "invalid_input", "本地模型路径不能用于 API 模式，请选择本地 FLUX.2 运行方式。"
+            )
         base_model = str(body.get("base_model", "flux2-klein-4b")).strip()
         api_key_env = str(body.get("api_key_env", "YINGZHANG_IMAGE_API_KEY")).strip()
         timeout = float(body.get("timeout", 300))
@@ -559,8 +603,8 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
             or (
                 backend == "mflux"
                 and (
-                    not executable
-                    or len(executable) > 1000
+                    not executable_text
+                    or len(executable_text) > 1000
                     or not base_model
                     or len(base_model) > 200
                 )
@@ -586,7 +630,7 @@ def dispatch(service: StudioService, action: str, body: dict) -> dict:
                 "backend": backend,
                 "base_url": base_url,
                 "model": model,
-                "executable": executable,
+                "executable": executable_text,
                 "base_model": base_model,
                 "api_key_env": api_key_env,
                 "timeout": timeout,
@@ -846,7 +890,9 @@ def image_dimensions(image_bytes: bytes, mime_type: str) -> tuple[int, int]:
 
 
 class Handler(BaseHTTPRequestHandler):
-    def send(self, status: int, data: bytes, content_type: str) -> None:
+    def send(
+        self, status: int, data: bytes, content_type: str, filename: str | None = None
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
@@ -854,6 +900,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "SAMEORIGIN")
         self.send_header("Referrer-Policy", "same-origin")
+        if filename:
+            self.send_header(
+                "Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename)}"
+            )
         self.end_headers()
         self.wfile.write(data)
 
@@ -881,9 +931,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/assets/studio/"):
                 from novel_anime.application.image_studio import image_asset
 
-                image_path, image_mime = image_asset(
-                    service, Path(path).name.removesuffix(".img")
-                )
+                image_path, image_mime = image_asset(service, Path(path).name.removesuffix(".img"))
                 self.send(200, image_path.read_bytes(), image_mime)
             elif path == "/api/library-counts":
                 from sqlalchemy import func, select
@@ -902,6 +950,28 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(200, result)
             elif path.startswith("/api/gallery-people/"):
                 self.json(200, list_people(service, path.removeprefix("/api/gallery-people/")))
+            elif path == "/api/library-export":
+                query = parse_qs(urlparse(self.path).query)
+                work_id = query.get("work_id", [""])[0]
+                entry_id = query.get("entry_id", [""])[0]
+                entry = next(
+                    (
+                        item
+                        for item in list_entries(service, work_id)
+                        if item["id"] == entry_id and item["kind"] == "prompts"
+                    ),
+                    None,
+                )
+                if entry is None:
+                    raise AppError("not_found", "收藏的分镜版本不存在，请刷新后重试。")
+                content = entry["content"]
+                title = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", content["chapter_title"])[:100]
+                self.send(
+                    200,
+                    export_prompt_excel(entry),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    f"{title}_分镜_v{content['revision']}_{entry['id'][:8]}.xlsx",
+                )
             elif path.startswith("/api/library/"):
                 self.json(200, list_entries(service, path.removeprefix("/api/library/")))
             elif path.startswith("/assets/library-images/"):

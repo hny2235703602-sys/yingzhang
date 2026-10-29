@@ -20,6 +20,7 @@ def profile(protocol: str = "chat_completions", **overrides: Any) -> ModelProfil
             "protocol": protocol,
             "base_url": "https://mock.test/v1",
             "model": "example",
+            "stream": False,
             **overrides,
         }
     )
@@ -379,3 +380,70 @@ def test_connection_diagnostic_classifies_without_leaking_payload(monkeypatch, c
     assert "响应读取中断" in caught.value.message
     assert "secret-sentinel" not in caplog.text + caught.value.message
     assert "private novel content" not in caplog.text + caught.value.message
+
+
+def test_stream_collects_final_json_and_requires_finish(monkeypatch):
+    def handler(request):
+        body = json.loads(request.content)
+        assert body["stream"] is True
+        chunks = [
+            {"choices": [{"index": 0, "delta": {"content": '{"issues":'}, "finish_reason": None}]},
+            {"choices": [{"index": 0, "delta": {"content": " []}"}, "finish_reason": "stop"}]},
+        ]
+        data = "".join(
+            "data: "
+            + json.dumps(
+                {"id": "s", "object": "chat.completion.chunk", "created": 1, "model": "actual", **c}
+            )
+            + "\n\n"
+            for c in chunks
+        )
+        return httpx.Response(
+            200, text=data + "data: [DONE]\n\n", headers={"content-type": "text/event-stream"}
+        )
+
+    install(monkeypatch, handler)
+    result, metadata = LLMClient(profile(stream=True)).generate(Review, "test", {}, "script")
+    assert result.issues == []
+    assert metadata["model"] == "actual"
+
+
+def test_stream_premature_end_never_accepts_valid_partial_json(monkeypatch):
+    def handler(request):
+        chunk = {
+            "id": "s",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "actual",
+            "choices": [
+                {"index": 0, "delta": {"content": '{"issues": []}'}, "finish_reason": None}
+            ],
+        }
+        return httpx.Response(
+            200,
+            text="data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    install(monkeypatch, handler)
+    with pytest.raises(AppError) as caught:
+        LLMClient(profile(stream=True)).generate(Review, "test", {}, "script")
+    assert caught.value.code == "llm_stream_interrupted"
+
+
+def test_stream_provider_error_is_classified_without_retry(monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            text='data: {"error":{"message":"overloaded","type":"server_error"}}\n\n',
+            headers={"content-type": "text/event-stream"},
+        )
+
+    install(monkeypatch, handler)
+    with pytest.raises(AppError) as caught:
+        LLMClient(profile(stream=True)).generate(Review, "test", {}, "script")
+    assert caught.value.code == "llm_stream_interrupted"
+    assert len(requests) == 1
